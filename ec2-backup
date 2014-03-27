@@ -1,0 +1,168 @@
+#!/usr/bin/python
+
+import os
+import time
+import sys
+import ConfigParser
+import getopt
+
+"""
+In case the user tries to run this script on a system that
+does not have boto installed, give them a helpful error.
+"""
+try:
+    import boto
+    from boto.ec2.connection import EC2Connection
+except ImportError:
+    print "Missing required dependency: boto"
+    print "Please see: https://github.com/boto/boto"
+    sys.exit(1)
+
+"""
+Print some basic info on how to use the script and exit
+"""
+def usage(exit_code):
+    print 'usage: '+sys.argv[0]+'  [-h] [-m method] [-v volume-id] dir'
+    sys.exit(exit_code)
+
+"""
+Fail with an error message
+"""
+def fatal(reason, exit_code=1):
+    print reason
+    sys.exit(exit_code)
+
+"""
+Constants necessary for input validation
+"""
+ALLOWED_METHODS  = ['dd', 'rsync']
+
+try:
+    opts, args = getopt.getopt(sys.argv[1:],"hm:v:",[])
+except getopt.GetoptError:
+    usage(1)
+    # NOTREACHED
+
+if '-h' in opts:
+    usage(0)
+    # NOTREACHED
+
+METHOD = opts.get('-m', 'dd') # default to 'dd'
+if METHOD not in ALLOWED_METHODS:
+    fatal('invalid method; please specify one of %s using -m <method>' % (ALLOWED_METHODS))
+
+# TODO - Should this be using "args" instead (args parsed from getopt)?
+if len(sys.argv) < 2: 
+    #missing last arg of dir
+    usage(2)
+
+# read AWS config file
+config = ConfigParser.ConfigParser()
+cfg_file_path = os.environ.get('AWS_CONFIG_FILE', DEFALUT_AWS_CONFIG_FILE)
+
+try:
+    with open(cfg_file_path) as cfg_fp:
+        config.readfp(cfg_fp)
+except IOError:
+    fatal("Failed to open config file located at " + cfg_file_path)
+
+# set properties
+ACCESS_KEY      = config.get('default', 'aws_access_key_id')
+SECRET_KEY      = config.get('default', 'aws_secret_access_key')
+AMI_IMAGE_ID    = '<ami-image-id>'
+KEY_NAME        = os.environ.get('EC2_PRIVATE_KEY')
+INSTANCE_TYPE   = '<awsInstanceType>'
+AWS_AZ          = 'us-east-1c' # AZ stands for Availability Zone
+SECURITY_GROUPS = ['your-security-group-here']
+VOLUME_ID       = '' # need to read input
+BCKUPSRCDIR     = sys.argv[-1] # Directory to backup, should be last command line option
+DEVICE          = '/dev/sdf'
+
+EC2_BACKUP_VERBOSE = os.environ.get("EC2_BACKUP_VERBOSE")
+DEBUG = (EC2_BACKUP_VERBOSE != '')
+
+def debug(msg):
+    if DEBUG:
+        print msg 
+
+# Create a Connection to AWS
+# TODO Error checking
+conn = EC2Connection(ACCESS_KEY, SECRET_KEY)
+
+# Create an EC2 instance
+# TODO Error checking
+resrv = conn.run_instances(AMI_IMAGE_ID,        \
+            key_name=KEY_NAME,                  \
+            instance_type=INSTANCE_TYPE,        \
+            placement=AWS_AZ,                   \
+            security_groups=SECURITY_GROUPS)
+
+# Wait for instance state to be running
+instance = resrv.instances[0]
+
+instance.update()
+# TODO Timeout after waiting too long
+while not instance.state == 'running':
+    time.sleep(10)
+    instance.update()
+
+debug('Instance Ready. Instance ID: ' + instance.id)
+
+# Mount EBS volume to new instance
+# TODO Error checking
+volume = conn.get_all_volumes(volume_ids=VOLUME_ID) #Get all volumes assocated with the current Instance
+volumeattach = volume.attach(instance.id, DEVICE) #attach volume
+
+while not volumeattach.status == 'available':
+# TODO Timeout after waiting too long
+    time.sleep(10)
+    volume.update()
+
+# TODO Remove this or document why it is necessary
+time.sleep(10)
+
+debug('Volume is attached')
+
+
+# TODO This line is confusing and a bit heavy. I don't want to touch it because I don't
+# fully understand it yet, but it definitely need to be refactored.
+os.system("ssh -t -t {0} ec2-user@{1} \"sudo mkdir /mnt/data-store && sudo mount {2} /mnt/data-store && echo 'Defaults !requiretty' | sudo tee /etc/sudoers.d/rsync > /dev/null\"".format(SSH_OPTS, instance.public_dns_name, DEVICE))
+
+# Initiate Rsync
+debug('Synchronizing directory with AWS')
+
+for dir in BCKUPSRCDIR:
+    """
+    Options explained
+    -e Specify the remote shell to use (ssh with options)
+    -a Archive mode; recursive and preserve meta info
+    -v Verbose output
+    -z Compress the data being transferred
+    --rsync-path Set the path to the rsync executable on remote host
+    """
+    # TODO Refactor so that this is more easily understandable
+    os.system("rsync -e \"ssh {0}\" -avz --delete --rsync-path=\"sudo rsync\" {2} ec2-user@{1}:/mnt/data-store{2}".format(SSH_OPTS, instance.dns_name, backup_dir))
+
+debug('Transfer complete')
+
+# Unmount EBS volume and terminate the instance
+debug('Detaching volume from EC2 Instance and Terminating Instance')
+
+# TODO Document
+os.system("ssh -t -t {0} ec2-user@{1} \"sudo umount /mnt/data-store\"".format(SSH_OPTS, instance.dns_name))
+
+# TODO Error checking + document
+volume.detach()
+while not volumeattach.status == 'available':
+    time.sleep(10) # Wait for the volume to detatch
+    volume.update()
+
+# TODO Remove this or document why it is necessary
+time.sleep(5)
+
+debug('Volume detatched succesfully')
+
+# TODO Error checking (?)
+instance.terminate()
+
+debug('EC2 Instance terminated successfully')
