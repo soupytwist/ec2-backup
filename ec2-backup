@@ -1,10 +1,13 @@
-#!/usr/bin/python
+#!/usr/bin/env python
 
 import os
 import time
 import sys
 import ConfigParser
-import getopt
+import argparse
+import random
+
+VERBOSE = os.environ.get("EC2_BACKUP_VERBOSE") is not None
 
 """
 In case the user tries to run this script on a system that
@@ -19,83 +22,129 @@ except ImportError:
     sys.exit(1)
 
 """
-Print some basic info on how to use the script and exit
+Produce an information message
 """
-def usage(exit_code):
-    print 'usage: '+sys.argv[0]+'  [-h] [-m method] [-v volume-id] dir'
-    sys.exit(exit_code)
+def info(msg):
+    if VERBOSE:
+        print "[INFO] " + msg
+
+"""
+Produce a non-fatal error message
+"""
+def warn(msg):
+    print "[WARN] " + msg
 
 """
 Fail with an error message
 """
 def fatal(reason, exit_code=1):
-    print reason
+    print "[ERROR] " + reason
     sys.exit(exit_code)
 
-"""
-Constants necessary for input validation
-"""
-ALLOWED_METHODS  = ['dd', 'rsync']
-
 try:
-    opts, args = getopt.getopt(sys.argv[1:],"hm:v:",[])
-except getopt.GetoptError:
-    usage(1)
-    # NOTREACHED
-
-if '-h' in opts:
-    usage(0)
-    # NOTREACHED
-
-METHOD = opts.get('-m', 'dd') # default to 'dd'
-if METHOD not in ALLOWED_METHODS:
-    fatal('invalid method; please specify one of %s using -m <method>' % (ALLOWED_METHODS))
-
-# TODO - Should this be using "args" instead (args parsed from getopt)?
-if len(sys.argv) < 2: 
-    #missing last arg of dir
-    usage(2)
+    parser = argparse.ArgumentParser(description="Create backups in the Amazon Cloud")
+    parser.add_argument('-m', '--method', default='dd')
+    parser.add_argument('-v', '--volume', default=None)
+    args = parser.parse_args(sys.argv[1:])
+except:
+    raise
 
 # read AWS config file
 config = ConfigParser.ConfigParser()
-cfg_file_path = os.environ.get('AWS_CONFIG_FILE', DEFALUT_AWS_CONFIG_FILE)
+cfg_file_path = os.environ.get('AWS_CONFIG_FILE')
+
+if cfg_file_path is None:
+    fatal("No config file defined; Please set 'AWS_CONFIG_FILE' in your environment")
 
 try:
     with open(cfg_file_path) as cfg_fp:
         config.readfp(cfg_fp)
 except IOError:
-    fatal("Failed to open config file located at " + cfg_file_path)
+    fatal("Failed to open config file: %s" % (cfg_file_path))
 
 # set properties
-ACCESS_KEY      = config.get('default', 'aws_access_key_id')
-SECRET_KEY      = config.get('default', 'aws_secret_access_key')
+try:
+    ACCESS_KEY = config.get('default', 'aws_access_key_id')
+except ConfigParser.NoOptionError:
+    fatal("Unable to read access key id. Is 'aws_access_key_id' defined in %s?" % (cfg_file_path))
+
+try:
+    SECRET_KEY = config.get('default', 'aws_secret_access_key')
+except ConfigParser.NoOptionError:
+    fatal("Unable to read secret access key. Is 'aws_secret_access_key' defined in %s?" % (cfg_file_path))
+
+CREDENTIALS = {
+    'aws_access_key_id': ACCESS_KEY,
+    'aws_secret_access_key': SECRET_KEY
+}
 AMI_IMAGE_ID    = '<ami-image-id>'
 KEY_NAME        = os.environ.get('EC2_PRIVATE_KEY')
 INSTANCE_TYPE   = '<awsInstanceType>'
-AWS_AZ          = 'us-east-1c' # AZ stands for Availability Zone
-SECURITY_GROUPS = ['your-security-group-here']
-VOLUME_ID       = '' # need to read input
+AWS_AZ          = 'us-east-1' # AZ stands for Availability Zone
+SECURITY_GROUP  = 'ec2-backup-default'
 BCKUPSRCDIR     = sys.argv[-1] # Directory to backup, should be last command line option
 DEVICE          = '/dev/sdf'
+TMP_DIR         = '/tmp'
+VOLUME_ID       = args.volume # will be None if unspecified
+METHOD          = args.method
 
-EC2_BACKUP_VERBOSE = os.environ.get("EC2_BACKUP_VERBOSE")
-DEBUG = (EC2_BACKUP_VERBOSE != '')
-
-def debug(msg):
-    if DEBUG:
-        print msg 
+if METHOD not in ['dd', 'rsync']:
+    fatal('invalid method; please specify one of (%s) using -m/--method' % ("|".join(ALLOWED_METHODS)))
 
 # Create a Connection to AWS
 # TODO Error checking
-conn = EC2Connection(ACCESS_KEY, SECRET_KEY)
+info("Connecting to %s..." % (AWS_AZ))
+
+conn = boto.ec2.connect_to_region(AWS_AZ, **CREDENTIALS)
+
+if conn is None:
+    info("Connection fataled; troubleshooting...")
+    regions = boto.ec2.regions(**CREDENTIALS)
+    if not any(r.name == AWS_AZ for r in regions):
+        fatal("Invalid region '%s'; Available regions: %s" % (AWS_AZ, ", ".join([r.name for r in regions])))
+    else:
+        fatal("Failed to initialize EC2 connection")
+
+"""
+Create a KeyPair to use
+Rather than forcing the user to configure their keypair and get it
+from the environment variables, let's just make a new single-use keypair
+for this session. Being as we'll never connect to this instance again,
+we can create the keypair, use it, and then dispose of it.
+"""
+KEYPAIRNAME = 'ec2-backup-%s' % (str(random.randint(0, int(10E10))).zfill(10))
+key = conn.create_key_pair(KEYPAIRNAME)
+if key.save(TMP_DIR):
+    info("Successfully saved KeyPair to: %s" % (TMP_DIR))
+else:
+    fatal("Unable to save the KeyPair. Are you able to write to %s?" % (TMP_DIR))
+
+"""
+Create the Security Group to use if it does not exist
+Check if we have the security group that we need for SSH access. If
+not, then create one for the user so they don't have to configure it.
+"""
+try:
+    info('Checking for existing security group: %s' % (SECURITY_GROUP))
+    group = conn.get_all_security_groups(groupnames=SECURITY_GROUP)[0]
+    info('Found security group: %s' % (SECURITY_GROUP))
+
+except conn.ResponseError, e:
+    if e.code == 'InvalidGroup.NotFound':
+        info('Creating Security Group: %s' % (SECURITY_GROUP))
+        group = conn.create_security_group(SECURITY_GROUP, 'Automatically generated by ec2-backup')
+        group.authorize('tcp', 22, 22, '0.0.0.0/0')
+    else:
+        warn('Failed to find a Security Group; trying to use "%s"' % (SECURITY_GROUP))
+
+fatal("Untested past this point!")
 
 # Create an EC2 instance
 # TODO Error checking
 resrv = conn.run_instances(AMI_IMAGE_ID,        \
-            key_name=KEY_NAME,                  \
+            key_name=KEYPAIRNAME,               \
             instance_type=INSTANCE_TYPE,        \
-            placement=AWS_AZ,                   \
-            security_groups=SECURITY_GROUPS)
+            security_groups=[SECURITY_GROUP])
 
 # Wait for instance state to be running
 instance = resrv.instances[0]
@@ -106,7 +155,7 @@ while not instance.state == 'running':
     time.sleep(10)
     instance.update()
 
-debug('Instance Ready. Instance ID: ' + instance.id)
+info('Instance Ready. Instance ID: ' + instance.id)
 
 # Mount EBS volume to new instance
 # TODO Error checking
@@ -121,7 +170,7 @@ while not volumeattach.status == 'available':
 # TODO Remove this or document why it is necessary
 time.sleep(10)
 
-debug('Volume is attached')
+info('Volume is attached')
 
 
 # TODO This line is confusing and a bit heavy. I don't want to touch it because I don't
@@ -129,7 +178,7 @@ debug('Volume is attached')
 os.system("ssh -t -t {0} ec2-user@{1} \"sudo mkdir /mnt/data-store && sudo mount {2} /mnt/data-store && echo 'Defaults !requiretty' | sudo tee /etc/sudoers.d/rsync > /dev/null\"".format(SSH_OPTS, instance.public_dns_name, DEVICE))
 
 # Initiate Rsync
-debug('Synchronizing directory with AWS')
+info('Synchronizing directory with AWS')
 
 for dir in BCKUPSRCDIR:
     """
@@ -143,10 +192,10 @@ for dir in BCKUPSRCDIR:
     # TODO Refactor so that this is more easily understandable
     os.system("rsync -e \"ssh {0}\" -avz --delete --rsync-path=\"sudo rsync\" {2} ec2-user@{1}:/mnt/data-store{2}".format(SSH_OPTS, instance.dns_name, backup_dir))
 
-debug('Transfer complete')
+info('Transfer complete')
 
 # Unmount EBS volume and terminate the instance
-debug('Detaching volume from EC2 Instance and Terminating Instance')
+info('Detaching volume from EC2 Instance and Terminating Instance')
 
 # TODO Document
 os.system("ssh -t -t {0} ec2-user@{1} \"sudo umount /mnt/data-store\"".format(SSH_OPTS, instance.dns_name))
@@ -160,9 +209,9 @@ while not volumeattach.status == 'available':
 # TODO Remove this or document why it is necessary
 time.sleep(5)
 
-debug('Volume detatched succesfully')
+info('Volume detatched succesfully')
 
 # TODO Error checking (?)
 instance.terminate()
 
-debug('EC2 Instance terminated successfully')
+info('EC2 Instance terminated successfully')
