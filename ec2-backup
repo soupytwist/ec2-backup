@@ -70,17 +70,18 @@ except IOError:
 try:
     ACCESS_KEY = config.get('default', 'aws_access_key_id')
 except ConfigParser.NoOptionError:
-    fatal("Unable to read access key id. Is 'aws_access_key_id' defined in %s?" % (cfg_file_path))
+    fatal("Unable to read access key id. Is 'aws_access_key_id' defined in %s in section [default]?" % (cfg_file_path))
 
 try:
     SECRET_KEY = config.get('default', 'aws_secret_access_key')
 except ConfigParser.NoOptionError:
-    fatal("Unable to read secret access key. Is 'aws_secret_access_key' defined in %s?" % (cfg_file_path))
+    fatal("Unable to read secret access key. Is 'aws_secret_access_key' defined in %s in section [default]?" % (cfg_file_path))
 
 CREDENTIALS = {
     'aws_access_key_id': ACCESS_KEY,
     'aws_secret_access_key': SECRET_KEY
 }
+
 AMI_IMAGE_ID    = 'ami-3b361952' # Fedora
 KEY_NAME        = os.environ.get('EC2_PRIVATE_KEY')
 INSTANCE_TYPE   = 't1.micro'
