@@ -189,7 +189,21 @@ try:
 
     info('Instance Ready. Instance ID: ' + instance.id)
 
-    print conn.get_all_instance_status(instance_ids = [instance.id])
+    initializationTimedOut = 0
+    doneInitializingInstance = False
+    while initializationTimedOut < 5*60 and not doneInitializingInstance: # 5 minutes
+        instance_statuses_list = conn.get_all_instance_status(instance_ids = [instance.id])
+        if(len(instance_statuses_list) == 1):
+            currentSystemStatus = instance_statuses_list[0].system_status
+            currentInstanceStatus = instance_statuses_list[0].instance_status
+            if currentSystemStatus == 'Status:initializing' or currentInstanceStatus == 'Status:initializing':
+                time.sleep(20)
+                initializationTimedOut += 20
+            else:
+                doneInitializingInstance = True
+    
+    if not doneInitializingInstance:
+        fail("instance initialization timed out")
 
     if canConnect(TMP_DIR+"/"+KEYPAIRNAME+".pem", instance.ip_address):
         info("was able to connect to ec2 instance")
@@ -308,6 +322,7 @@ except Exception, e:
                 if obj.status == 'available' or obj.status == 'in-use':
                     info("Deleting allocated volume...")
                     obj.detach()
+                    # TODO: wait here for it to be detached first. if its still detaching at time of deletion it will crash
                     obj.delete()
                 else:
                     info("volume not available or in-use")
