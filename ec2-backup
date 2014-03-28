@@ -92,6 +92,7 @@ DEVICE          = '/dev/sdf'
 TMP_DIR         = '/tmp'
 VOLUME_ID       = args.volume # will be None if unspecified
 METHOD          = args.method
+UPDATE_TIMEOUT  = 5*60 # 5 minute maximum wait time (in seconds)
 
 if METHOD not in ['dd', 'rsync']:
     fatal('invalid method; please specify one of (%s) using -m/--method' % ("|".join(ALLOWED_METHODS)))
@@ -157,11 +158,15 @@ try:
     RESOURCES.append(('instance', instance))
 
     # TODO Timeout after waiting too long
+    instanceTimeout = 0
     info("Waiting for remote machine to start...")
     while not instance.state == 'running':
+        if instanceTimeout >= UPDATE_TIMEOUT:
+            raise Exception("Machine has not updated despite waiting %s seconds".format(UPDATE_TIMEOUT))
         time.sleep(10)
         info("Checking if the machine is ready...")
         instance.update()
+        instanceTimeout += 10
 
     info('Instance Ready. Instance ID: ' + instance.id)
 
@@ -175,6 +180,7 @@ try:
         if len(volumes) != 1:
             fatal('Failed to load remote volume with id: "%s"' % (VOLUME_ID))
         info("Got the volume")
+        volume = volumes[0]
     else:
         info("Creating a new volume...")
         volume = conn.create_volume(10, AWS_AZ)
@@ -242,6 +248,7 @@ try:
     info('EC2 Instance terminated successfully')
 
 except e:
+    # TODO: shouldn't this be warn(e)?
     print e
     if len(RESOURCES) > 0:
         warn("Cleaning up...")
