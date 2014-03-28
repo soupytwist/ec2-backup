@@ -111,6 +111,8 @@ VOLUME_ID       = args.volume # will be None if unspecified
 METHOD          = args.method
 UPDATE_TIMEOUT  = 5*60 # 5 minute maximum wait time (in seconds)
 
+# TODO: if VOLUME_ID is specified, get zone for volume and set AWS_AZ to that ZONE. we need instance and volume to be in the same region
+
 if METHOD not in ['dd', 'rsync']:
     fatal('invalid method; please specify one of (%s) using -m/--method' % ("|".join(ALLOWED_METHODS)))
 
@@ -353,6 +355,7 @@ except Exception, e:
                         obj.update()
                         volumeTimeout += 5
                     info("current volume status: "+obj.status)
+
                     try:
                         if VOLUME_ID is None:
                             # you only want to delete the volume on cleanup if we personally created the volume during program execution
