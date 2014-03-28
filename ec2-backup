@@ -49,9 +49,15 @@ try:
     parser = argparse.ArgumentParser(description="Create backups in the Amazon Cloud")
     parser.add_argument('-m', '--method', default='dd')
     parser.add_argument('-v', '--volume', default=None)
+    parser.add_argument('-h', '--help', default=None)
     args = parser.parse_args(sys.argv[1:])
 except:
     raise
+
+if args.help is not None:
+    print "ec2-backup -- backup a directory into Elastic Block Storage (EBS)"
+    print "ec2-backup [-h] [-m method] [-v volume-id] dir"
+
 
 # read AWS config file
 config = ConfigParser.ConfigParser()
@@ -211,7 +217,7 @@ try:
 # fully understand it yet, but it definitely need to be refactored.
     os.system("ssh -t -t {0} ec2-user@{1} \"sudo mkdir /mnt/data-store && sudo mount {2} /mnt/data-store && echo 'Defaults !requiretty' | sudo tee /etc/sudoers.d/rsync > /dev/null\"".format(SSH_OPTS, instance.public_dns_name, DEVICE))
 
-# Initiate Rsync
+    # Initiate Rsync
     info('Synchronizing directory with AWS')
 
     for dir in BCKUPSRCDIR:
