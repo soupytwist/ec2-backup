@@ -50,7 +50,9 @@ Try and reach a system over ssh
 """
 def canConnect(keypairPath, ip):
     info("trying to test ssh connectivity to instance")
-    if os.system("ssh -i %s fedora@%s 'echo  > /dev/null' ".format(keypairPath, ip)) == 0:
+    # TODO: possibly add -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no to ssh args 
+    # it will either complain about hosts file or ask that you accept/deny new hosts key without these flags
+    if os.system("ssh -i %s fedora@%s 'echo  > /dev/null' " % (keypairPath, ip)) == 0:
         return True
     return False
 
@@ -58,12 +60,11 @@ try:
     parser = argparse.ArgumentParser(description="Create backups in the Amazon Cloud")
     parser.add_argument('-m', '--method', default='dd')
     parser.add_argument('-v', '--volume', default=None)
-    args = parser.parse_args(sys.argv[1:])
-    #print args
+    args = parser.parse_args(sys.argv[1:-1])
 except:
     raise
 
-if help in args:
+if 'help' in args:
     print "ec2-backup -- backup a directory into Elastic Block Storage (EBS)"
     print "ec2-backup [-h] [-m method] [-v volume-id] dir"
 
@@ -188,6 +189,8 @@ try:
 
     info('Instance Ready. Instance ID: ' + instance.id)
 
+    print conn.get_all_instance_status(instance_ids = [instance.id])
+
     if canConnect(TMP_DIR+"/"+KEYPAIRNAME+".pem", instance.ip_address):
         info("was able to connect to ec2 instance")
     else:
@@ -207,12 +210,14 @@ try:
 
         if volume.status == 'in-use':
             fatal("specified volume is already in use")
+
+        # TODO: check if volume placement is different than the instance placement. can only attach if in same region
     else:
         info("Creating a new volume...")
         # Possible TODO: determine size of volume from source directory
-        volume = conn.create_volume(10, AWS_AZ)
+        volume = conn.create_volume(10, instance.placement)
 
-        RESOUCES.append(('volume', volume))
+        RESOURCES.append(('volume', volume))
 
         volumeTimeout = 0
         info("Waiting for the volume to become available...")
@@ -277,7 +282,7 @@ try:
 
     info('EC2 Instance terminated successfully')
 
-except e:
+except Exception, e:
     # TODO: shouldn't this be warn(e)?
     print e
     if len(RESOURCES) > 0:
@@ -289,14 +294,23 @@ except e:
             if key == 'keypair':
                 info("Deleting keypair...")
                 obj.delete()
+                try:
+                    os.remove(TMP_DIR+"/"+KEYPAIRNAME+".pem")
+                except:
+                    info("could not remove security key %s" % TMP_DIR+"/"+KEYPAIRNAME+".pem")
             elif key == 'instance':
                 if obj.state == 'running':
                     info("Terminating instance...")
                     obj.terminate()
+                else:
+                    info("instance already terminated")
             elif key == 'volume':
-                if obj.status == 'available':
+                if obj.status == 'available' or obj.status == 'in-use':
                     info("Deleting allocated volume...")
                     obj.detach()
                     obj.delete()
-
+                else:
+                    info("volume not available or in-use")
+            else:
+                info("unrecognized key when cleaning up RESOUCES: key=%s" % key)
 
