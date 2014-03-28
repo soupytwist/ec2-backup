@@ -191,17 +191,24 @@ try:
 
     initializationTimedOut = 0
     doneInitializingInstance = False
-    while initializationTimedOut < 5*60 and not doneInitializingInstance: # 5 minutes
+    while initializationTimedOut < 5*60: # 5 minutes
+        if doneInitializingInstance:
+            info("system initialized")
+            break
         instance_statuses_list = conn.get_all_instance_status(instance_ids = [instance.id])
         if(len(instance_statuses_list) == 1):
             currentSystemStatus = instance_statuses_list[0].system_status
             currentInstanceStatus = instance_statuses_list[0].instance_status
+            info("system status: '%s'   instance status: '%s'" % (currentSystemStatus, currentInstanceStatus))
             if currentSystemStatus == 'Status:initializing' or currentInstanceStatus == 'Status:initializing':
                 info("waiting for system initialization to finish")
                 time.sleep(20)
                 initializationTimedOut += 20
             else:
+                info("!system status: '%s'   instance status: '%s'" % (currentSystemStatus, currentInstanceStatus))
                 doneInitializingInstance = True
+        else:
+            fatal("unable to get system status. # instances found when searching for status is "+len(instance_statuses_list))
     
     if not doneInitializingInstance:
         fail("instance initialization timed out")
@@ -322,20 +329,35 @@ except Exception, e:
             elif key == 'volume':
                 if obj.status == 'available' or obj.status == 'in-use':
                     info("Deleting allocated volume...")
-                    obj.detach()
+                    obj.update()
+                    volumeDetached = obj.detach()
+                    obj.update()
+                    detachForced = False
+                    if not volumeDetached:
+                        detachForced = obj.detach(force=True)
+                        obj.update()
+
+                    if not volumeDetached and not detachForced:
+                        print "could not detach volume from instance"
+
                     # wait here for it to be detached first. if its still detaching at time of deletion it will crash
                     volumeTimeout = 0
                     info("Waiting for the volume to become available...")
                     # fix this. you must wait for some other status 
                     info("Checking if the volume is detached...")
-                    while obj.status == 'in-use':
+                    while obj.status != 'available':
                         if volumeTimeout >= UPDATE_TIMEOUT*5:
                             break
                         time.sleep(5)
                         info("Checking if the volume is detached...")
                         obj.update()
                         volumeTimeout += 5
-                    obj.delete()
+                    info("current volume status: "+obj.status)
+                    try:
+                        obj.delete()
+                    except Exception, vex:
+                        print "could not delete volume: "
+                        print vex
                 else:
                     info("volume not available or in-use")
             else:
