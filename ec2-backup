@@ -197,6 +197,7 @@ try:
             currentSystemStatus = instance_statuses_list[0].system_status
             currentInstanceStatus = instance_statuses_list[0].instance_status
             if currentSystemStatus == 'Status:initializing' or currentInstanceStatus == 'Status:initializing':
+                info("waiting for system initialization to finish")
                 time.sleep(20)
                 initializationTimedOut += 20
             else:
