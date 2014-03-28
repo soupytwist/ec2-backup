@@ -88,6 +88,7 @@ CREDENTIALS = {
     'aws_secret_access_key': SECRET_KEY
 }
 
+# Possible TODO: allow user to specify instance type in AWS_BACKUP_ARGS
 AMI_IMAGE_ID    = 'ami-3b361952' # Fedora
 KEY_NAME        = os.environ.get('EC2_PRIVATE_KEY')
 INSTANCE_TYPE   = 't1.micro'
@@ -170,7 +171,7 @@ try:
     info("Waiting for remote machine to start...")
     while not instance.state == 'running':
         if instanceTimeout >= UPDATE_TIMEOUT:
-            raise Exception("Machine has not updated despite waiting %s seconds".format(UPDATE_TIMEOUT))
+            raise EC2BackupError("Machine has not updated despite waiting %s seconds".format(UPDATE_TIMEOUT))
         time.sleep(10)
         info("Checking if the machine is ready...")
         instance.update()
@@ -189,6 +190,9 @@ try:
             fatal('Failed to load remote volume with id: "%s"' % (VOLUME_ID))
         info("Got the volume")
         volume = volumes[0]
+
+        if volume.status == 'in-use':
+            fatal("specified volume is already in use")
     else:
         info("Creating a new volume...")
         # Possible TODO: determine size of volume from source directory
@@ -200,7 +204,7 @@ try:
         info("Waiting for the volume to become available...")
         while volume.status != 'available':
             if volumeTimeout >= UPDATE_TIMEOUT:
-                raise Exception("volume not available despite waiting %s seconds".format(UPDATE_TIMEOUT))
+                raise EC2BackupError("volume not available despite waiting %s seconds".format(UPDATE_TIMEOUT))
             time.sleep(5)
             info("Checking if the volume is ready...")
             volume.update()
@@ -213,6 +217,8 @@ try:
         fatal("Failed to attach volume")
 
     info('Volume is attached')
+
+# TODO: if method is rsync, create filesystem on newly attached volume if none exists
 
 
 # TODO This line is confusing and a bit heavy. I don't want to touch it because I don't
