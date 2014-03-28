@@ -183,6 +183,7 @@ try:
         volume = volumes[0]
     else:
         info("Creating a new volume...")
+        # Possible TODO: determine size of volume from source directory
         volume = conn.create_volume(10, AWS_AZ)
 
         RESOUCES.append(('volume', volume))
@@ -197,14 +198,11 @@ try:
             volume.update()
             volumeTimeout += 5
         
-
+    info("Trying to attach volume to instance")
     if volume.attach(instance.id, DEVICE): #attach volume
         info("Successfully attached storage volume.")
     else:
         fatal("Failed to attach volume")
-
-    # TODO Remove this or document why it is necessary
-    time.sleep(10)
 
     info('Volume is attached')
 
