@@ -323,7 +323,18 @@ except Exception, e:
                 if obj.status == 'available' or obj.status == 'in-use':
                     info("Deleting allocated volume...")
                     obj.detach()
-                    # TODO: wait here for it to be detached first. if its still detaching at time of deletion it will crash
+                    # wait here for it to be detached first. if its still detaching at time of deletion it will crash
+                    volumeTimeout = 0
+                    info("Waiting for the volume to become available...")
+                    # fix this. you must wait for some other status 
+                    info("Checking if the volume is detached...")
+                    while obj.status == 'in-use':
+                        if volumeTimeout >= UPDATE_TIMEOUT*5:
+                            break
+                        time.sleep(5)
+                        info("Checking if the volume is detached...")
+                        obj.update()
+                        volumeTimeout += 5
                     obj.delete()
                 else:
                     info("volume not available or in-use")
