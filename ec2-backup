@@ -272,6 +272,11 @@ try:
 # mkdir -p /mnt/data-store
 # mount /dev/xvdf /mnt/data-store
 
+# TODO: handle dd: http://reliablesolutions.blogspot.com/2009/05/implementing-remote-tar-solutions-with.html
+# TODO: handle rsync: http://blog.bobbyallen.me/2011/06/10/automating-remote-backups-over-rsync-with-ssh/
+
+
+
 # TODO This line is confusing and a bit heavy. I don't want to touch it because I don't
 # fully understand it yet, but it definitely need to be refactored.
     os.system("ssh -t -t {0} ec2-user@{1} \"sudo mkdir -p /mnt/data-store && sudo mount {2} /mnt/data-store && echo 'Defaults !requiretty' | sudo tee /etc/sudoers.d/rsync > /dev/null\"".format(SSH_OPTS, instance.public_dns_name, DEVICE))
@@ -279,7 +284,7 @@ try:
     # Initiate Rsync
     info('Synchronizing directory with AWS')
 
-    for dir in BCKUPSRCDIR:
+    for dir in BCKUPSRCDIR: # we are only backing up a single directory to my knowledge. argument parsing currently accounts for that
         """
         Options explained
         -e Specify the remote shell to use (ssh with options)
