@@ -103,20 +103,22 @@ UPDATE_TIMEOUT  = 5*60 # 5 minute maximum wait time (in seconds)
 if METHOD not in ['dd', 'rsync']:
     fatal('invalid method; please specify one of (%s) using -m/--method' % ("|".join(ALLOWED_METHODS)))
 
-# Create a Connection to AWS
-# TODO Error checking
-info("Connecting to %s..." % (AWS_AZ))
-
-conn = boto.ec2.connect_to_region(AWS_AZ, **CREDENTIALS)
-
-if conn is None:
-    info("Connection fataled; troubleshooting...")
-    regions = boto.ec2.regions(**CREDENTIALS)
-    if not any(r.name == AWS_AZ for r in regions):
-        fatal("Invalid region '%s'; Available regions: %s" % (AWS_AZ, ", ".join([r.name for r in regions])))
-    fatal("Failed to initialize EC2 connection")
-
 try:
+    # Create a Connection to AWS
+    # TODO Error checking
+    # what error checking is needed here?
+    info("Connecting to %s..." % (AWS_AZ))
+
+    conn = boto.ec2.connect_to_region(AWS_AZ, **CREDENTIALS)
+
+    if conn is None:
+        info("Connection fataled; troubleshooting...")
+        regions = boto.ec2.regions(**CREDENTIALS)
+        if not any(r.name == AWS_AZ for r in regions):
+            fatal("Invalid region '%s'; Available regions: %s" % (AWS_AZ, ", ".join([r.name for r in regions])))
+        fatal("Failed to initialize EC2 connection")
+
+
     """
     Create a KeyPair to use
     Rather than forcing the user to configure their keypair and get it
