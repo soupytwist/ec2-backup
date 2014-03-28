@@ -58,12 +58,12 @@ try:
     parser = argparse.ArgumentParser(description="Create backups in the Amazon Cloud")
     parser.add_argument('-m', '--method', default='dd')
     parser.add_argument('-v', '--volume', default=None)
-    parser.add_argument('-h', '--help', default=None)
     args = parser.parse_args(sys.argv[1:])
+    #print args
 except:
     raise
 
-if args.help is not None:
+if help in args:
     print "ec2-backup -- backup a directory into Elastic Block Storage (EBS)"
     print "ec2-backup [-h] [-m method] [-v volume-id] dir"
 
