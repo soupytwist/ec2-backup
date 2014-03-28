@@ -45,6 +45,15 @@ def fatal(reason, exit_code=1):
     print "[ERROR] " + reason
     raise EC2BackupError()
 
+"""
+Try and reach a system over ssh
+"""
+def canConnect(keypairPath, ip):
+    info("trying to test ssh connectivity to instance")
+    if os.system("ssh -i %s fedora@%s 'echo  > /dev/null' ".format(keypairPath, ip)) == 0:
+        return True
+    return False
+
 try:
     parser = argparse.ArgumentParser(description="Create backups in the Amazon Cloud")
     parser.add_argument('-m', '--method', default='dd')
@@ -179,6 +188,11 @@ try:
 
     info('Instance Ready. Instance ID: ' + instance.id)
 
+    if canConnect(TMP_DIR+"/"+KEYPAIRNAME+".pem", instance.ip_address):
+        info("was able to connect to ec2 instance")
+    else:
+        fatal("could not connect to ec2 instance over ssh")
+
     """
     Mount EBS volume to new instance
     If there was a volume specified, use that. Otherwise, make a new volume.
@@ -209,7 +223,7 @@ try:
             info("Checking if the volume is ready...")
             volume.update()
             volumeTimeout += 5
-        
+    
     info("Trying to attach volume to instance")
     if volume.attach(instance.id, DEVICE): #attach volume
         info("Successfully attached storage volume.")
@@ -218,12 +232,11 @@ try:
 
     info('Volume is attached')
 
-# TODO: if method is rsync, create filesystem on newly attached volume if none exists
-
+# TODO: if method is rsync, create filesystem on newly attached volume if none exists (/dev/xvdf)
 
 # TODO This line is confusing and a bit heavy. I don't want to touch it because I don't
 # fully understand it yet, but it definitely need to be refactored.
-    os.system("ssh -t -t {0} ec2-user@{1} \"sudo mkdir /mnt/data-store && sudo mount {2} /mnt/data-store && echo 'Defaults !requiretty' | sudo tee /etc/sudoers.d/rsync > /dev/null\"".format(SSH_OPTS, instance.public_dns_name, DEVICE))
+    os.system("ssh -t -t {0} ec2-user@{1} \"sudo mkdir -p /mnt/data-store && sudo mount {2} /mnt/data-store && echo 'Defaults !requiretty' | sudo tee /etc/sudoers.d/rsync > /dev/null\"".format(SSH_OPTS, instance.public_dns_name, DEVICE))
 
     # Initiate Rsync
     info('Synchronizing directory with AWS')
@@ -285,3 +298,5 @@ except e:
                     info("Deleting allocated volume...")
                     obj.detach()
                     obj.delete()
+
+
