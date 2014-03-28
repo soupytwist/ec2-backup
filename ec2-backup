@@ -246,6 +246,8 @@ except e:
     if len(RESOURCES) > 0:
         warn("Cleaning up...")
 
+        # TODO: should we look into deleting our custom security group after we are done?
+
         for key, obj in reversed(RESOURCES):
             if key == 'keypair':
                 info("Deleting keypair...")
