@@ -262,6 +262,15 @@ try:
     info('Volume is attached')
 
 # TODO: if method is rsync, create filesystem on newly attached volume if none exists (/dev/xvdf)
+# http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-using-volumes.html
+# sudo file -s /dev/xvdf
+# /dev/xvdf: data
+# ^ if we see this output then we know that there is no filesystem
+# make one with sudo mkfs -t ext4 /dev/xvdf
+# the file command does not appear to be installed on fedora by default so we may have to change AMI's
+# finally, mount file system: 
+# mkdir -p /mnt/data-store
+# mount /dev/xvdf /mnt/data-store
 
 # TODO This line is confusing and a bit heavy. I don't want to touch it because I don't
 # fully understand it yet, but it definitely need to be refactored.
@@ -292,6 +301,7 @@ try:
 
 # TODO Error checking + document
     volume.detach()
+    volume.update()
     while not volumeattach.status == 'available':
         time.sleep(10) # Wait for the volume to detatch
         volume.update()
@@ -323,6 +333,10 @@ except Exception, e:
                 except:
                     info("could not remove security key %s" % TMP_DIR+"/"+KEYPAIRNAME+".pem")
             elif key == 'instance':
+                # creating an instance automatically creates an ebs volume.
+                # find and delete that ebs volume as well (should be attached).
+                # we should be careful that this part runs after 'volume' as we dont want to accidentally delete the volume we stored data too
+                # TODO: find and delete that volume
                 if obj.state == 'running':
                     info("Terminating instance...")
                     obj.terminate()
