@@ -184,14 +184,16 @@ try:
     else:
         info("Creating a new volume...")
         volume = conn.create_volume(10, AWS_AZ)
-
-        info("Waiting for the volume to become available...")
-        while volume.status != 'available':
-            time.sleep(5)
-            info("Checking if the volume is ready...")
-            volume.update()
-        
         RESOUCES.append(('volume', volume))
+
+
+    info("Waiting for the volume to become available...")
+    while volume.status != 'available':
+        time.sleep(5)
+        info("Checking if the volume is ready...")
+        volume.update()
+        
+
 
     if volume.attach(instance.id, DEVICE): #attach volume
         info("Successfully attached storage volume.")
