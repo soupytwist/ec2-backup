@@ -354,7 +354,9 @@ except Exception, e:
                         volumeTimeout += 5
                     info("current volume status: "+obj.status)
                     try:
-                        obj.delete()
+                        if VOLUME_ID is None:
+                            # you only want to delete the volume on cleanup if we personally created the volume
+                            obj.delete()
                     except Exception, vex:
                         print "could not delete volume: "
                         print vex
