@@ -48,11 +48,11 @@ def fatal(reason, exit_code=1):
 """
 Try and reach a system over ssh
 """
-def canConnect(keypairPath, ip):
+def canConnect(opts, ip):
     info("trying to test ssh connectivity to instance")
-    # TODO: possibly add -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no to ssh args 
+    # -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no was presumably added to SSH_OPTS
     # it will either complain about hosts file or ask that you accept/deny new hosts key without these flags
-    if os.system("ssh -i %s fedora@%s 'echo  > /dev/null' " % (keypairPath, ip)) == 0:
+    if os.system("ssh %s fedora@%s 'echo  > /dev/null' " % (opts, ip)) == 0:
         return True
     return False
 
@@ -105,7 +105,7 @@ AMI_IMAGE_ID    = 'ami-3b361952' # Fedora
 KEY_NAME        = os.environ.get('EC2_PRIVATE_KEY')
 INSTANCE_TYPE   = 't1.micro'
 AWS_REGION      = 'us-east-1'
-AWS_AZ          = 'us-east-1a' # AZ stands for Availability Zone
+AWS_AZ          = 'us-east-1c' # AZ stands for Availability Zone
 SECURITY_GROUP  = 'ec2-backup-default'
 BCKUPSRCDIR     = args.backupdir # Directory to backup, should be last command line option
 DEVICE          = '/dev/sdf'
@@ -115,6 +115,9 @@ METHOD          = args.method
 UPDATE_TIMEOUT  = 5*60 # 5 minute maximum wait time (in seconds)
 SSH_OPTS        = os.environ.get('EC2_BACKUP_FLAGS_SSH')
 
+if SSH_OPTS is None:
+    SSH_OPTS = ''
+
 # TODO: if VOLUME_ID is specified, get zone for volume and set AWS_AZ to that ZONE. we need instance and volume to be in the same region
 
 if METHOD not in ['dd', 'rsync']:
@@ -122,8 +125,6 @@ if METHOD not in ['dd', 'rsync']:
 
 try:
     # Create a Connection to AWS
-    # TODO Error checking
-    # what error checking is needed here?
     info("Connecting to %s..." % (AWS_REGION))
 
     conn = boto.ec2.connect_to_region(AWS_REGION, **CREDENTIALS)
@@ -149,6 +150,7 @@ try:
     if key.save(TMP_DIR):
         info("Successfully saved KeyPair to: %s" % (path_to_key))
         RESOURCES.append(('keypair', key))
+        SSH_OPTS += " -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -i " + path_to_key + " "
     else:
         fatal("Unable to save the KeyPair. Are you able to write to %s?" % (path_to_key))
 
@@ -212,8 +214,10 @@ try:
                 info("waiting for system initialization to finish")
                 time.sleep(20)
                 initializationTimedOut += 20
+                instance.update()
             else:
                 info("!system status: '%s'   instance status: '%s'" % (currentSystemStatus, currentInstanceStatus))
+                time.sleep(20)
                 doneInitializingInstance = True
         else:
             fatal("unable to get system status. # instances found when searching for status is "+len(instance_statuses_list))
@@ -221,7 +225,7 @@ try:
     if not doneInitializingInstance:
         fail("instance initialization timed out")
 
-    if canConnect(TMP_DIR+"/"+KEYPAIRNAME+".pem", instance.ip_address):
+    if canConnect(SSH_OPTS, instance.ip_address):
         info("was able to connect to ec2 instance")
     else:
         fatal("could not connect to ec2 instance over ssh")
@@ -267,40 +271,63 @@ try:
 
     info('Volume is attached')
 
-# TODO: if method is rsync, create filesystem on newly attached volume if none exists (/dev/xvdf)
-# http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-using-volumes.html
-# sudo file -s /dev/xvdf
-# /dev/xvdf: data
-# ^ if we see this output then we know that there is no filesystem
-# make one with sudo mkfs -t ext4 /dev/xvdf
-# the file command does not appear to be installed on fedora by default so we may have to change AMI's
-# finally, mount file system: 
-# mkdir -p /mnt/data-store
-# mount /dev/xvdf /mnt/data-store
+    # TODO: if method is rsync, create filesystem on newly attached volume if none exists (/dev/xvdf)
+    # http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-using-volumes.html
+    # sudo file -s /dev/xvdf
+    # /dev/xvdf: data
+    # ^ if we see this output then we know that there is no filesystem
+    # make one with sudo mkfs -t ext4 /dev/xvdf
+    # the file command does not appear to be installed on fedora by default so we may have to change AMI's
+    # finally, mount file system: 
+    # mkdir -p /mnt/data-store
+    # mount /dev/xvdf /mnt/data-store
 
-# TODO: handle dd: http://reliablesolutions.blogspot.com/2009/05/implementing-remote-tar-solutions-with.html
-# TODO: handle rsync: http://blog.bobbyallen.me/2011/06/10/automating-remote-backups-over-rsync-with-ssh/
+    # TODO: handle dd: http://reliablesolutions.blogspot.com/2009/05/implementing-remote-tar-solutions-with.html
+    # TODO: handle rsync: http://blog.bobbyallen.me/2011/06/10/automating-remote-backups-over-rsync-with-ssh/
+
+    if METHOD == 'rsync':
+        info("backing up %s using rsync" % BCKUPSRCDIR)
+        if os.system("ssh {0} fedora@{1} \"sudo mkdir -p /mnt/data-store\" ".format(SSH_OPTS, instance.public_dns_name)) != 0:
+            fatal("could not create mount point on instance for rsync")
+        # TODO: check if you need to create a filesystem on /dev/xvdf using fsck
+        # if yes, os.system("ssh {0} fedora@{1} \" sudo mkfs -t ext4 /dev/xvdf \" ".format(SSH_OPTS, instance.public_dns_name) )
+        # do check for failure of previous command
+
+        # the following would mount the block device and make fedora the owner of all files
+        # os.system("ssh {0} fedora@{1} \" sudo mount /dev/xvdf /mnt/data-store && sudo chown -R fedora /mnt/data-store \"".format(SSH_OPTS, instance.public_dns_name) )
+        # do check for failure of previous command
+
+        # do rsync command here
+        # os.system("  rsync -avz -e \"ssh {0} \" {1} fedora@{2}:/mnt/data-store ".format(SSH_OPTS, BCKUPSRCDIR, instance.public_dns_name) )
+        # check for failure of previous command here
+
+        # os.system("ssh {0} fedora@{1} \" sudo umount /mnt/data-store \"".format(SSH_OPTS, instance.public_dns_name) )
+        # check for failure of previous command here
+    else:
+        info("backing up %s using dd" % BCKUPSRCDIR)
+        # the following should handle dd without any issues
+        # os.system( "tar -cvf - BCKUPSRCDIR | ssh {0} fedora@{1} \"dd of=/dev/xvdf bs=64k conv=block\"  ".format(SSH_OPTS, instance.public_dns_name) )
 
 
-
-# TODO This line is confusing and a bit heavy. I don't want to touch it because I don't
-# fully understand it yet, but it definitely need to be refactored.
-    os.system("ssh -t -t -i {0} {1} ec2-user@{2} \"sudo mkdir /mnt/data-store && sudo mount {3} /mnt/data-store && echo 'Defaults !requiretty' | sudo tee /etc/sudoers.d/rsync > /dev/null\"".format(path_to_key, SSH_OPTS, instance.public_dns_name, DEVICE))
+    # TODO This line is confusing and a bit heavy. I don't want to touch it because I don't
+    # fully understand it yet, but it definitely need to be refactored.
+    # The below code is by Alex from our first attempt at writing this tool
+    #    os.system("ssh -t -t -i {0} {1} ec2-user@{2} \"sudo mkdir /mnt/data-store && sudo mount {3} /mnt/data-store && echo 'Defaults !requiretty' | sudo tee /etc/sudoers.d/rsync > /dev/null\"".format(path_to_key, SSH_OPTS, instance.public_dns_name, DEVICE))
 
     # Initiate Rsync
     info('Synchronizing directory with AWS')
 
-    for dir in BCKUPSRCDIR: # we are only backing up a single directory to my knowledge. argument parsing currently accounts for that
-        """
-        Options explained
-        -e Specify the remote shell to use (ssh with options)
-        -a Archive mode; recursive and preserve meta info
-        -v Verbose output
-        -z Compress the data being transferred
-        --rsync-path Set the path to the rsync executable on remote host
-        """
-        # TODO Refactor so that this is more easily understandable
-        os.system("rsync -e \"ssh {0}\" -avz --delete --rsync-path=\"sudo rsync\" {2} ec2-user@{1}:/mnt/data-store{2}".format(SSH_OPTS, instance.dns_name, backup_dir))
+#    for dir in BCKUPSRCDIR: # we are only backing up a single directory to my knowledge. argument parsing currently accounts for that
+#        """
+#        Options explained
+#        -e Specify the remote shell to use (ssh with options)
+#        -a Archive mode; recursive and preserve meta info
+#        -v Verbose output
+#        -z Compress the data being transferred
+#        --rsync-path Set the path to the rsync executable on remote host
+#        """
+#        # TODO Refactor so that this is more easily understandable
+#        os.system("rsync -e \"ssh {0}\" -avz --delete --rsync-path=\"sudo rsync\" {2} ec2-user@{1}:/mnt/data-store{2}".format(SSH_OPTS, instance.dns_name, backup_dir))
 
     info('Transfer complete')
 
@@ -308,12 +335,12 @@ try:
     info('Detaching volume from EC2 Instance and Terminating Instance')
 
 # TODO Document
-    os.system("ssh -t -t {0} ec2-user@{1} \"sudo umount /mnt/data-store\"".format(SSH_OPTS, instance.dns_name))
+    #os.system("ssh -t -t {0} ec2-user@{1} \"sudo umount /mnt/data-store\"".format(SSH_OPTS, instance.dns_name))
 
 # TODO Error checking + document
     volume.detach()
     volume.update()
-    while not volumeattach.status == 'available':
+    while not volume.status == 'available':
         time.sleep(10) # Wait for the volume to detatch
         volume.update()
 
