@@ -7,7 +7,7 @@ import ConfigParser
 import argparse
 import random
 
-class EC2BackupError(Exception):
+class TriggerCleanup(Exception):
     pass
 RESOURCES = []
 
@@ -43,7 +43,7 @@ Fail with an error message
 """
 def fatal(reason, exit_code=1):
     print "[ERROR] " + reason
-    raise EC2BackupError()
+    raise TriggerCleanup()
 
 """
 Try and reach a system over ssh
@@ -60,8 +60,10 @@ try:
     parser = argparse.ArgumentParser(description="Create backups in the Amazon Cloud")
     parser.add_argument('-m', '--method', default='dd')
     parser.add_argument('-v', '--volume', default=None)
-    args = parser.parse_args(sys.argv[1:-1])
+    parser.add_argument('backupdir')
+    args = parser.parse_args(sys.argv[1:])
 except:
+    # TODO Fail
     raise
 
 if 'help' in args:
@@ -102,14 +104,16 @@ CREDENTIALS = {
 AMI_IMAGE_ID    = 'ami-3b361952' # Fedora
 KEY_NAME        = os.environ.get('EC2_PRIVATE_KEY')
 INSTANCE_TYPE   = 't1.micro'
-AWS_AZ          = 'us-east-1' # AZ stands for Availability Zone
+AWS_REGION      = 'us-east-1'
+AWS_AZ          = 'us-east-1a' # AZ stands for Availability Zone
 SECURITY_GROUP  = 'ec2-backup-default'
-BCKUPSRCDIR     = sys.argv[-1] # Directory to backup, should be last command line option
+BCKUPSRCDIR     = args.backupdir # Directory to backup, should be last command line option
 DEVICE          = '/dev/sdf'
 TMP_DIR         = '/tmp'
 VOLUME_ID       = args.volume # will be None if unspecified
 METHOD          = args.method
 UPDATE_TIMEOUT  = 5*60 # 5 minute maximum wait time (in seconds)
+SSH_OPTS        = os.environ.get('EC2_BACKUP_FLAGS_SSH')
 
 # TODO: if VOLUME_ID is specified, get zone for volume and set AWS_AZ to that ZONE. we need instance and volume to be in the same region
 
@@ -120,15 +124,15 @@ try:
     # Create a Connection to AWS
     # TODO Error checking
     # what error checking is needed here?
-    info("Connecting to %s..." % (AWS_AZ))
+    info("Connecting to %s..." % (AWS_REGION))
 
-    conn = boto.ec2.connect_to_region(AWS_AZ, **CREDENTIALS)
+    conn = boto.ec2.connect_to_region(AWS_REGION, **CREDENTIALS)
 
     if conn is None:
         info("Connection fataled; troubleshooting...")
         regions = boto.ec2.regions(**CREDENTIALS)
-        if not any(r.name == AWS_AZ for r in regions):
-            fatal("Invalid region '%s'; Available regions: %s" % (AWS_AZ, ", ".join([r.name for r in regions])))
+        if not any(r.name == AWS_REGION for r in regions):
+            fatal("Invalid region '%s'; Available regions: %s" % (AWS_REGION, ", ".join([r.name for r in regions])))
         fatal("Failed to initialize EC2 connection")
 
 
@@ -141,11 +145,12 @@ try:
     """
     KEYPAIRNAME = 'ec2-backup-%s' % (str(random.randint(0, int(10E10))).zfill(10))
     key = conn.create_key_pair(KEYPAIRNAME)
-    RESOURCES.append(('keypair', key))
+    path_to_key = os.path.join(TMP_DIR, KEYPAIRNAME + '.pem')
     if key.save(TMP_DIR):
-        info("Successfully saved KeyPair to: %s" % (TMP_DIR))
+        info("Successfully saved KeyPair to: %s" % (path_to_key))
+        RESOURCES.append(('keypair', key))
     else:
-        fatal("Unable to save the KeyPair. Are you able to write to %s?" % (TMP_DIR))
+        fatal("Unable to save the KeyPair. Are you able to write to %s?" % (path_to_key))
 
     """
     Create the Security Group to use if it does not exist
@@ -170,6 +175,7 @@ try:
     """
     info("Starting a remote machine...")
     resrv = conn.run_instances(AMI_IMAGE_ID,        \
+                placement=AWS_AZ,                   \
                 key_name=KEYPAIRNAME,               \
                 instance_type=INSTANCE_TYPE,        \
                 security_groups=[SECURITY_GROUP])
@@ -183,7 +189,7 @@ try:
     info("Waiting for remote machine to start...")
     while not instance.state == 'running':
         if instanceTimeout >= UPDATE_TIMEOUT:
-            raise EC2BackupError("Machine has not updated despite waiting %s seconds".format(UPDATE_TIMEOUT))
+            raise TriggerCleanup("Machine has not updated despite waiting %s seconds".format(UPDATE_TIMEOUT))
         time.sleep(10)
         info("Checking if the machine is ready...")
         instance.update()
@@ -279,7 +285,7 @@ try:
 
 # TODO This line is confusing and a bit heavy. I don't want to touch it because I don't
 # fully understand it yet, but it definitely need to be refactored.
-    os.system("ssh -t -t {0} ec2-user@{1} \"sudo mkdir -p /mnt/data-store && sudo mount {2} /mnt/data-store && echo 'Defaults !requiretty' | sudo tee /etc/sudoers.d/rsync > /dev/null\"".format(SSH_OPTS, instance.public_dns_name, DEVICE))
+    os.system("ssh -t -t -i {0} {1} ec2-user@{2} \"sudo mkdir /mnt/data-store && sudo mount {3} /mnt/data-store && echo 'Defaults !requiretty' | sudo tee /etc/sudoers.d/rsync > /dev/null\"".format(path_to_key, SSH_OPTS, instance.public_dns_name, DEVICE))
 
     # Initiate Rsync
     info('Synchronizing directory with AWS')
@@ -330,60 +336,68 @@ except Exception, e:
         # TODO: should we look into deleting our custom security group after we are done?
 
         for key, obj in reversed(RESOURCES):
-            if key == 'keypair':
-                info("Deleting keypair...")
-                obj.delete()
-                try:
-                    os.remove(TMP_DIR+"/"+KEYPAIRNAME+".pem")
-                except:
-                    info("could not remove security key %s" % TMP_DIR+"/"+KEYPAIRNAME+".pem")
-            elif key == 'instance':
-                # creating an instance automatically creates an ebs volume.
-                # find and delete that ebs volume as well (should be attached).
-                # we should be careful that this part runs after 'volume' as we dont want to accidentally delete the volume we stored data too
-                # TODO: find and delete that volume
-                if obj.state == 'running':
-                    info("Terminating instance...")
-                    obj.terminate()
-                else:
-                    info("instance already terminated")
-            elif key == 'volume':
-                if obj.status == 'available' or obj.status == 'in-use':
-                    info("Deleting allocated volume...")
-                    obj.update()
-                    volumeDetached = obj.detach()
-                    obj.update()
-                    detachForced = False
-                    if not volumeDetached:
-                        detachForced = obj.detach(force=True)
-                        obj.update()
-
-                    if not volumeDetached and not detachForced:
-                        print "could not detach volume from instance"
-
-                    # wait here for it to be detached first. if its still detaching at time of deletion it will crash
-                    volumeTimeout = 0
-                    info("Waiting for the volume to become available...")
-                    # fix this. you must wait for some other status 
-                    info("Checking if the volume is detached...")
-                    while obj.status != 'available':
-                        if volumeTimeout >= UPDATE_TIMEOUT*5:
-                            break
-                        time.sleep(5)
-                        info("Checking if the volume is detached...")
-                        obj.update()
-                        volumeTimeout += 5
-                    info("current volume status: "+obj.status)
-
+            try:
+                if key == 'keypair':
+                    info("Deleting keypair...")
+                    if obj.delete():
+                        info("Successfully removed old keypair")
+                    else:
+                        warn("Keypair could not be deleted: %s" % (KEYPAIRNAME,))
                     try:
-                        if VOLUME_ID is None:
-                            # you only want to delete the volume on cleanup if we personally created the volume during program execution
-                            obj.delete()
-                    except Exception, vex:
-                        print "could not delete volume: "
-                        print vex
-                else:
-                    info("volume not available or in-use")
-            else:
-                info("unrecognized key when cleaning up RESOUCES: key=%s" % key)
+                        os.remove(path_to_key)
+                    except:
+                        info("Failed to remove private key file: %s" % (path_to_key,))
+                elif key == 'instance':
+                    # creating an instance automatically creates an ebs volume.
+                    # find and delete that ebs volume as well (should be attached).
+                    # we should be careful that this part runs after 'volume' as we dont want to accidentally delete the volume we stored data too
+                    # TODO: find and delete that volume
+                    if obj.state == 'running':
+                        info("Terminating instance...")
+                        obj.terminate()
+                        info("Instance is stopping...")
+                    else:
+                        info("instance already terminated")
+                elif key == 'volume':
+                    if obj.status == 'available' or obj.status == 'in-use':
+                        info("Deleting allocated volume...")
+                        obj.update()
+                        volumeDetached = obj.detach()
+                        obj.update()
+                        detachForced = False
+                        if not volumeDetached:
+                            detachForced = obj.detach(force=True)
+                            obj.update()
 
+                        if not volumeDetached and not detachForced:
+                            print "could not detach volume from instance"
+
+                        # wait here for it to be detached first. if its still detaching at time of deletion it will crash
+                        volumeTimeout = 0
+                        info("Waiting for the volume to become available...")
+                        # fix this. you must wait for some other status 
+                        info("Checking if the volume is detached...")
+                        while obj.status != 'available':
+                            if volumeTimeout >= UPDATE_TIMEOUT*5:
+                                break
+                            time.sleep(5)
+                            info("Checking if the volume is detached...")
+                            obj.update()
+                            volumeTimeout += 5
+                        info("current volume status: "+obj.status)
+
+                        try:
+                            if VOLUME_ID is None:
+                                # you only want to delete the volume on cleanup if we personally created the volume during program execution
+                                obj.delete()
+                        except Exception, vex:
+                            print "could not delete volume: "
+                            print vex
+                    else:
+                        info("volume not available or in-use")
+                else:
+                    info("unrecognized key when cleaning up RESOUCES: key=%s" % key)
+
+            except Exception, inner:
+                print inner
+                warn("Cleanup step failed, continuing...")
