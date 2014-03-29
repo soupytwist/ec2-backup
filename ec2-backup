@@ -339,9 +339,6 @@ try:
         time.sleep(10) # Wait for the volume to detatch
         volume.update()
 
-# TODO Remove this or document why it is necessary
-    time.sleep(5)
-
     info('Volume detatched succesfully')
 
 # TODO Error checking (?)
