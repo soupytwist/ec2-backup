@@ -202,17 +202,18 @@ try:
             break
         instance_statuses_list = conn.get_all_instance_status(instance_ids = [instance.id])
         if(len(instance_statuses_list) == 1):
-            currentSystemStatus = instance_statuses_list[0].system_status
-            currentInstanceStatus = instance_statuses_list[0].instance_status
+            currentSystemStatus = str(instance_statuses_list[0].system_status)
+            currentInstanceStatus = str(instance_statuses_list[0].instance_status)
             info("system status: '%s'   instance status: '%s'" % (currentSystemStatus, currentInstanceStatus))
-            if currentSystemStatus == 'Status:initializing' or currentInstanceStatus == 'Status:initializing':
+            if (currentSystemStatus != 'Status:ok') or (currentInstanceStatus != 'Status:ok'):
                 info("waiting for system initialization to finish")
-                time.sleep(20)
-                initializationTimedOut += 20
+                time.sleep(10)
+                initializationTimedOut += 10
                 instance.update()
             else:
                 info("!system status: '%s'   instance status: '%s'" % (currentSystemStatus, currentInstanceStatus))
-                time.sleep(20)
+                time.sleep(10)
+                instance.update()
                 doneInitializingInstance = True
         else:
             fatal("unable to get system status. # instances found when searching for status is "+len(instance_statuses_list))
@@ -264,6 +265,7 @@ try:
     else:
         fatal("Failed to attach volume")
 
+    volume.update()
     info('Volume is attached')
 
     # TODO: if method is rsync, create filesystem on newly attached volume if none exists (/dev/xvdf)
@@ -280,31 +282,56 @@ try:
     # TODO: handle dd: http://reliablesolutions.blogspot.com/2009/05/implementing-remote-tar-solutions-with.html
     # TODO: handle rsync: http://blog.bobbyallen.me/2011/06/10/automating-remote-backups-over-rsync-with-ssh/
 
+    info("volume.attach_data.device is: '"+str(volume.attach_data.device)+"'")
+
     if METHOD == 'rsync':
         info("backing up %s using rsync" % BCKUPSRCDIR)
-        if os.system("ssh {0} fedora@{1} \"sudo mkdir -p /mnt/data-store\" ".format(SSH_OPTS, instance.public_dns_name)) != 0:
+        if os.system("ssh -t -t {0} fedora@{1} \"sudo mkdir -p /mnt/data-store\" ".format(SSH_OPTS, instance.public_dns_name)) != 0:
             fatal("could not create mount point on instance for rsync")
-        # TODO: check if you need to create a filesystem on /dev/xvdf using fsck
-        # if yes, os.system("ssh {0} fedora@{1} \" sudo mkfs -t ext4 /dev/xvdf \" ".format(SSH_OPTS, instance.public_dns_name) )
-        # do check for failure of previous command
+
+        checkFileSystemVal = os.system("ssh -t -t {0} fedora@{1} \"sudo fsck {2} \" ".format(SSH_OPTS, instance.public_dns_name, str(volume.attach_data.device)))
+        if checkFileSystemVal != 0:
+            info("creating filesystem on remote ebs volume")
+            if os.system("ssh -t -t {0} fedora@{1} \"sudo mkfs -t ext4 {2} \" ".format(SSH_OPTS, instance.public_dns_name, str(volume.attach_data.device))) != 0:
+                os.system("ssh -t -t {0} fedora@{1} \"sudo ls /dev \" ".format(SSH_OPTS, instance.public_dns_name))                
+                fatal("could not create filesystem on remote ebs volume")
+            else:
+                info("created filesystem on remote ebs volume")
+        else:
+            info("detected existing ebs volume filesystem")
+
 
         # the following would mount the block device and make fedora the owner of all files
-        # os.system("ssh {0} fedora@{1} \" sudo mount /dev/xvdf /mnt/data-store && sudo chown -R fedora /mnt/data-store \"".format(SSH_OPTS, instance.public_dns_name) )
-        # do check for failure of previous command
+        mountval = os.system("ssh -t -t {0} fedora@{1} \" sudo mount {2} /mnt/data-store && sudo chown -R fedora /mnt/data-store \"".format(SSH_OPTS, instance.public_dns_name, str(volume.attach_data.device)) )
+
+        if mountval != 0:
+            fatal("could not mount ebs volume")
+        else:
+            info("ebs volume mounted")
 
         # do rsync command here
-        # os.system("  rsync -avz -e \"ssh {0} \" {1} fedora@{2}:/mnt/data-store ".format(SSH_OPTS, BCKUPSRCDIR, instance.public_dns_name) )
-        # check for failure of previous command here
+        rsyncVal = os.system("  rsync -avz --delete -e \"ssh -t -t {0} \" {1} fedora@{2}:/mnt/data-store ".format(SSH_OPTS, BCKUPSRCDIR, instance.public_dns_name) )
+        if rsyncVal != 0:
+            fatal("failed to rsync with remote system volume")
+        else:
+            info("successfully ran rsync with remote volume")
 
-        # os.system("ssh {0} fedora@{1} \" sudo umount /mnt/data-store \"".format(SSH_OPTS, instance.public_dns_name) )
-        # check for failure of previous command here
+        umountVal = os.system("ssh -t -t {0} fedora@{1} \" sudo umount /mnt/data-store \"".format(SSH_OPTS, instance.public_dns_name) )
+        if umountVal != 0:
+            fatal("failed to unmount remote volume from instance")
+        else:
+            info("successfully umounted remote volume from instance")
     else:
         info("backing up %s using dd" % BCKUPSRCDIR)
         # the following should handle dd without any issues
-        # os.system( "tar -cvf - BCKUPSRCDIR | ssh {0} fedora@{1} \"dd of=/dev/xvdf bs=64k conv=block\"  ".format(SSH_OPTS, instance.public_dns_name) )
+        ddVal = os.system( "tar -cvf - BCKUPSRCDIR | ssh -t -t {0} fedora@{1} \"sudo dd of={2} bs=64k conv=block\"  ".format(SSH_OPTS, instance.public_dns_name, str(volume.attach_data.device)) )
+        if ddVal != 0:
+            fatal("could not backup directory to remote ebs volume using dd")
+        else:
+            info("successfully backed up directory to remote ebs volume using dd")
 
 # Initiate Rsync
-    info('Synchronizing directory with AWS')
+    info('Synchronized directory with AWS')
 
 #    for dir in BCKUPSRCDIR: # we are only backing up a single directory to my knowledge. argument parsing currently accounts for that
 #        """
@@ -318,31 +345,25 @@ try:
 #        # TODO Refactor so that this is more easily understandable
 #        os.system("rsync -e \"ssh {0}\" -avz --delete --rsync-path=\"sudo rsync\" {2} ec2-user@{1}:/mnt/data-store{2}".format(SSH_OPTS, instance.dns_name, backup_dir))
 
-    info('Transfer complete')
-
 # Unmount EBS volume and terminate the instance
     info('Detaching volume from EC2 Instance and Terminating Instance')
 
-# TODO Document
-    #os.system("ssh -t -t {0} ec2-user@{1} \"sudo umount /mnt/data-store\"".format(SSH_OPTS, instance.dns_name))
-
-# TODO Error checking + document
     volume.detach()
     volume.update()
     while not volume.status == 'available':
+        info("current status of volume is %s" % volume.status)
         time.sleep(10) # Wait for the volume to detatch
         volume.update()
 
     info('Volume detatched succesfully')
 
-# TODO Error checking (?)
     instance.terminate()
 
     info('EC2 Instance terminated successfully')
 
 except Exception, e:
     # TODO: shouldn't this be warn(e)?
-    print e
+    warn(str(e))
     if len(RESOURCES) > 0:
         warn("Cleaning up...")
 
@@ -376,11 +397,18 @@ except Exception, e:
                         info("Deleting allocated volume...")
                         obj.update()
                         volumeDetached = obj.detach()
+                        time.sleep(10)
                         obj.update()
                         detachForced = False
                         if not volumeDetached:
+                            info("forcing volume detachment")
                             detachForced = obj.detach(force=True)
                             obj.update()
+                            time.sleep(10)
+                        else:
+                            info("volume should be been detached")
+
+                        info("current status of volume is %s" % obj.status)
 
                         if not volumeDetached and not detachForced:
                             print "could not detach volume from instance"
@@ -396,6 +424,7 @@ except Exception, e:
                             time.sleep(5)
                             info("Checking if the volume is detached...")
                             obj.update()
+                            info("current status of volume is %s" % obj.status)
                             volumeTimeout += 5
                         info("current volume status: "+obj.status)
 
@@ -412,5 +441,5 @@ except Exception, e:
                     info("unrecognized key when cleaning up RESOUCES: key=%s" % key)
 
             except Exception, inner:
-                print inner
+                warn(str(inner))
                 warn("Cleanup step failed, continuing...")
