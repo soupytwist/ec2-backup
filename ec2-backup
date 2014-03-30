@@ -292,6 +292,8 @@ try:
     else:
         fatal("could not connect to ec2 instance over ssh")
 
+    os.system("ssh -t -t {0} fedora@{1} \"sudo ls /dev \" ".format(SSH_OPTS, instance.public_dns_name))                
+
     """
     Mount EBS volume to new instance
     If there was a volume specified, use that. Otherwise, make a new volume.
