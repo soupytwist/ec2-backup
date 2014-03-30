@@ -471,6 +471,7 @@ except Exception, e:
                         info("Checking if the volume is detached...")
                         while obj.status != 'available':
                             if volumeTimeout >= UPDATE_TIMEOUT*5:
+                                info("hit volume detach timeout")
                                 break
                             time.sleep(5)
                             info("Checking if the volume is detached...")
