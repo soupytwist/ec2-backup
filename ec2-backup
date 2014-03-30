@@ -156,15 +156,17 @@ def runSystemShellCommand(cmd):
     output, error = process.communicate()
     returnCode = process.returncode
     if returnCode != 0:
-        warn("non-zero return code for \"cmd\": "+error)
+        warn("non-zero return code for \"cmd\": "+error+"\n\nreturnCode="+str(returnCode))
     return (returnCode, output, error)
 
 def fileExists(cmd, filename):
     (returnCode, output, error) = runSystemShellCommand(cmd)
-    output = output.replace("\t", "\n").replace("\r\n", "\n")
-    output = map(lambda x: x.strip(), output )
-    info("checking for files existance: file={0}, files={1}".format(filename, str(output.split("\n"))))
-    return (returnCode == 0) and (filename in output.split("\n"))
+    if type(output) == type(""):
+        output = output.replace("\t", "\n").replace("\r\n", "\n").replace(" ", "\n").split("\n")
+    
+    output = map( lambda x: str(x).strip(), output )
+    #info("checking for files existance: file={0}, files={1}".format(filename, str(output)))
+    return (returnCode == 0) and (filename in output)
 
 def fileExistsInDirOnRemoteSystem(SSH_OPTS, instance, directory, filename):
     cmd = "ssh -t -t {0} fedora@{1} \" ls {2} \" ".format(SSH_OPTS, instance.public_dns_name, directory)
@@ -379,6 +381,7 @@ try:
     runSystemShellCommand("ssh -t -t {0} fedora@{1} \" rm .bashrc \" ".format(SSH_OPTS, instance.public_dns_name))
     runSystemShellCommand("ssh -t -t {0} fedora@{1} \" rm .bash_profile \" ".format(SSH_OPTS, instance.public_dns_name))
     runSystemShellCommand("ssh -t -t {0} fedora@{1} \" rm .profile \" ".format(SSH_OPTS, instance.public_dns_name))
+    runSystemShellCommand("ssh -t -t {0} fedora@{1} \" sudo chown -R fedora /dev/xvdf \" ".format(SSH_OPTS, instance.public_dns_name))
 
     if METHOD == 'rsync':
         info("backing up %s using rsync" % BCKUPSRCDIR)
@@ -406,8 +409,16 @@ try:
         else:
             info("ebs volume mounted")
 
+        rsyncPermissionsVal = runSystemShellCommand("ssh -t -t {0} fedora@{1} \"echo 'Defaults !requiretty' | sudo tee /etc/sudoers.d/rsync > /dev/null\"".format(SSH_OPTS, instance.public_dns_name) )[0]
+
+        if rsyncPermissionsVal != 0:
+            fatal("could not change permissions for rsync")
+        else:
+            info("rsync permissions changed")
+        
+
         # do rsync command here
-        rsyncVal = runSystemShellCommand("rsync -e \"ssh {0} \" -avz -vv --delete --rsync-path=\"rsync\" {1} fedora@{2}:/mnt/data-store ".format(SSH_OPTS, BCKUPSRCDIR, instance.public_dns_name) )[0]
+        rsyncVal = runSystemShellCommand("rsync -e \"ssh {0} \" -avz -vv --delete --rsync-path=\"sudo rsync\" {1} fedora@{2}:/mnt/data-store ".format(SSH_OPTS, BCKUPSRCDIR, instance.public_dns_name) )[0]
         if rsyncVal != 0:
             fatal("failed to rsync with remote system volume")
         else:
@@ -422,7 +433,7 @@ try:
     else:
         info("backing up %s using dd" % BCKUPSRCDIR)
         # the following should handle dd without any issues
-        ddVal = runSystemShellCommand( "tar -cvf - {3} | ssh -t -t {0} fedora@{1} \"sudo dd of={2} bs=64k conv=block\"  ".format(SSH_OPTS, instance.public_dns_name, str(attach_location), BCKUPSRCDIR) )[0]
+        ddVal = runSystemShellCommand( "tar -cvf - {3} | ssh {0} fedora@{1} \"dd of={2} bs=64k conv=block\"  ".format(SSH_OPTS, instance.public_dns_name, str(attach_location), BCKUPSRCDIR) )[0]
         if ddVal != 0:
             fatal("could not backup directory to remote ebs volume using dd")
         else:
