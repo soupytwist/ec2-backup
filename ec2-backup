@@ -99,7 +99,7 @@ KEY_NAME        = os.environ.get('EC2_PRIVATE_KEY')
 AMI_IMAGE_ID    = 'ami-3b361952'
 INSTANCE_TYPE   = 't1.micro'
 AWS_REGION      = 'us-east-1'
-AWS_AZ          = 'us-east-1a' # AZ stands for Availability Zone
+AWS_AZ          = 'us-east-1c' # AZ stands for Availability Zone
 SECURITY_GROUP  = 'ec2-backup-default'
 # TODO Ensure that this directory exists + calculate its size
 BCKUPSRCDIR     = args.backupdir # Directory to backup, should be last command line option
