@@ -439,6 +439,7 @@ try:
         else:
             info("successfully backed up directory to remote ebs volume using dd")
 
+
 # Initiate Rsync
     info('Synchronized directory with AWS')
 
