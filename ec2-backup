@@ -101,6 +101,7 @@ INSTANCE_TYPE   = 't1.micro'
 AWS_REGION      = 'us-east-1'
 AWS_AZ          = 'us-east-1a' # AZ stands for Availability Zone
 SECURITY_GROUP  = 'ec2-backup-default'
+# TODO Ensure that this directory exists + calculate its size
 BCKUPSRCDIR     = args.backupdir # Directory to backup, should be last command line option
 DEVICE          = '/dev/sdf'
 TMP_DIR         = '/tmp'
@@ -195,12 +196,7 @@ try:
 
     else:
         conn = try_connection(AWS_REGION)
-
-        info("Creating a new volume...")
-        # Possible TODO: determine size of volume from source directory
-        volume = conn.create_volume(10, instance.placement)
-
-        RESOURCES.append(('volume', volume))
+        volume = None
 
     """
     Create a KeyPair to use
@@ -300,6 +296,13 @@ try:
     Mount EBS volume to new instance
     If there was a volume specified, use that. Otherwise, make a new volume.
     """
+    if volume is None:
+        info("Creating a new volume...")
+        # Possible TODO: determine size of volume from source directory
+        volume = conn.create_volume(10, instance.placement)
+
+        RESOURCES.append(('volume', volume))
+
     volumeTimeout = 0
     info("Waiting for the volume to become available...")
     while volume.status != 'available':
