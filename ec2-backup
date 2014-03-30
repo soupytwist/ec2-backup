@@ -41,9 +41,12 @@ def warn(msg):
 """
 Fail with an error message
 """
-def fatal(reason, exit_code=1):
+def fatal(reason, cleanup=True):
     print "[ERROR] " + reason
-    raise TriggerCleanup()
+    if cleanup:
+        raise TriggerCleanup()
+    else:
+        sys.exit(1)
 
 """
 Try and reach a system over ssh
@@ -56,39 +59,35 @@ def canConnect(opts, ip):
         return True
     return False
 
-try:
-    parser = argparse.ArgumentParser(description="Create backups in the Amazon Cloud")
-    parser.add_argument('-m', '--method', default='dd')
-    parser.add_argument('-v', '--volume', default=None)
-    parser.add_argument('backupdir')
-    args = parser.parse_args(sys.argv[1:])
-except:
-    # TODO Fail
-    raise
+parser = argparse.ArgumentParser(description="Create backups in the Amazon Cloud")
+parser.add_argument('-m', '--method', default='dd')
+parser.add_argument('-v', '--volume', default=None)
+parser.add_argument('backupdir')
+args = parser.parse_args(sys.argv[1:])
 
 # read AWS config file
 config = ConfigParser.ConfigParser()
 cfg_file_path = os.environ.get('AWS_CONFIG_FILE')
 
 if cfg_file_path is None:
-    fatal("No config file defined; Please set 'AWS_CONFIG_FILE' in your environment")
+    fatal("No config file defined; Please set 'AWS_CONFIG_FILE' in your environment", cleanup=False)
 
 try:
     with open(cfg_file_path) as cfg_fp:
         config.readfp(cfg_fp)
 except IOError:
-    fatal("Failed to open config file: %s" % (cfg_file_path))
+    fatal("Failed to open config file: %s" % (cfg_file_path), cleanup=False)
 
 # set properties
 try:
     ACCESS_KEY = config.get('default', 'aws_access_key_id')
 except ConfigParser.NoOptionError:
-    fatal("Unable to read access key id. Is 'aws_access_key_id' defined in %s in section [default]?" % (cfg_file_path))
+    fatal("Unable to read access key id. Is 'aws_access_key_id' defined in %s in section [default]?" % (cfg_file_path), cleanup=False)
 
 try:
     SECRET_KEY = config.get('default', 'aws_secret_access_key')
 except ConfigParser.NoOptionError:
-    fatal("Unable to read secret access key. Is 'aws_secret_access_key' defined in %s in section [default]?" % (cfg_file_path))
+    fatal("Unable to read secret access key. Is 'aws_secret_access_key' defined in %s in section [default]?" % (cfg_file_path), cleanup=False)
 
 CREDENTIALS = {
     'aws_access_key_id': ACCESS_KEY,
@@ -96,11 +95,11 @@ CREDENTIALS = {
 }
 
 # Possible TODO: allow user to specify instance type in AWS_BACKUP_ARGS
-AMI_IMAGE_ID    = 'ami-3b361952' # Fedora
 KEY_NAME        = os.environ.get('EC2_PRIVATE_KEY')
+AMI_IMAGE_ID    = 'ami-3b361952'
 INSTANCE_TYPE   = 't1.micro'
 AWS_REGION      = 'us-east-1'
-AWS_AZ          = 'us-east-1c' # AZ stands for Availability Zone
+AWS_AZ          = 'us-east-1a' # AZ stands for Availability Zone
 SECURITY_GROUP  = 'ec2-backup-default'
 BCKUPSRCDIR     = args.backupdir # Directory to backup, should be last command line option
 DEVICE          = '/dev/sdf'
@@ -108,29 +107,100 @@ TMP_DIR         = '/tmp'
 VOLUME_ID       = args.volume # will be None if unspecified
 METHOD          = args.method
 UPDATE_TIMEOUT  = 5*60 # 5 minute maximum wait time (in seconds)
-SSH_OPTS        = os.environ.get('EC2_BACKUP_FLAGS_SSH')
+SSH_OPTS        = os.environ.get('EC2_BACKUP_FLAGS_SSH', "")
 
-if SSH_OPTS is None:
-    SSH_OPTS = ''
-
-# TODO: if VOLUME_ID is specified, get zone for volume and set AWS_AZ to that ZONE. we need instance and volume to be in the same region
+"""
+AMIs are bound to a region, so we need to
+have an AMI ID for every supported region
+"""
+AMI_IMAGE_IDS = {
+        'us-east-1': 'ami-3b361952',
+        'us-west-1': 'ami-68e3d32d',
+        'us-west-2': 'ami-56771366',
+        'eu-west-1': 'ami-3401e843',
+        'ap-southeast-1': 'ami-bccd99ee',
+        'ap-southeast-2': 'ami-374bd40d',
+        'ap-northeast-1': 'ami-7dd7b47c',
+        'sa-east': 'ami-6f6ecf72',
+}
 
 if METHOD not in ['dd', 'rsync']:
-    fatal('invalid method; please specify one of (%s) using -m/--method' % ("|".join(ALLOWED_METHODS)))
+    fatal('invalid method; please specify one of (%s) using -m/--method' % ("|".join(ALLOWED_METHODS)), cleanup=False)
 
-try:
+def try_connection(region):
+    if region not in AMI_IMAGE_IDS:
+        info("Skipping unsupported region %s" % (region,))
+        return None
+
     # Create a Connection to AWS
-    info("Connecting to %s..." % (AWS_REGION))
-
-    conn = boto.ec2.connect_to_region(AWS_REGION, **CREDENTIALS)
+    info("Connecting to %s..." % (region))
+    conn = boto.ec2.connect_to_region(region, **CREDENTIALS)
 
     if conn is None:
-        info("Connection fataled; troubleshooting...")
+        info("Connection failed; troubleshooting...")
         regions = boto.ec2.regions(**CREDENTIALS)
-        if not any(r.name == AWS_REGION for r in regions):
-            fatal("Invalid region '%s'; Available regions: %s" % (AWS_REGION, ", ".join([r.name for r in regions])))
-        fatal("Failed to initialize EC2 connection")
+        if not any(r.name == region for r in regions):
+            fatal("Invalid region '%s'; Available regions: %s" % (region, ", ".join([r.name for r in regions])))
+        fatal("Failed to connect to region: %s" % (region,))
 
+    info("Connected to region: %s" % (region,))
+    return conn
+
+def lookup_volume(vol_id):
+    info("Looking up volume: %s" % (vol_id,))
+
+    regions = boto.ec2.regions(**CREDENTIALS)
+    info("Trying to locate the volume in the following regions: %s" % (", ".join([r.name for r in regions]),))
+
+    info('Looking up volume with id: "%s"' % (vol_id))
+    for region in regions:
+        conn = try_connection(region.name)
+
+        if conn is None:
+            continue
+
+        try:
+            volumes = conn.get_all_volumes(volume_ids=vol_id) #Get all volumes assocated with the current Instance
+            volume = volumes[0]
+
+            if volume.status == 'in-use':
+                fatal("Volume %s is already in use" % (vol_id,))
+
+            info("Found volume: %s" % (vol_id,))
+            info("Configuring availability zone to match existing volume...")
+
+            global AWS_AZ
+            global AMI_IMAGE_ID
+            AWS_AZ = volume.zone
+
+            AMI_IMAGE_ID = AMI_IMAGE_IDS[region.name]
+
+            info("Using availability zone: %s" % (AWS_AZ))
+            return (conn, volume)
+
+        except boto.ec2.connection.EC2Connection.ResponseError:
+            conn.close()
+            pass
+
+    fatal('Failed to load remote volume with id: "%s"' % (vol_id))
+    # NOTREACHED
+
+try:
+    """
+    If a volume id was given, we have to ensure to that we are operating
+    on the region and AZ that is the same as the volume is in.
+    """
+    if args.volume is not None:
+        conn, volume = lookup_volume(VOLUME_ID)
+
+    else:
+        conn = try_connection(AWS_REGION)
+
+        info("Creating a new volume...")
+        # Possible TODO: determine size of volume from source directory
+        volume = conn.create_volume(10, instance.placement)
+
+        RESOURCES.append(('volume', volume))
 
     """
     Create a KeyPair to use
@@ -230,34 +300,15 @@ try:
     Mount EBS volume to new instance
     If there was a volume specified, use that. Otherwise, make a new volume.
     """
-    if VOLUME_ID is not None:
-        info('Looking up volume with id: "%s"' % (VOLUME_ID))
-        volumes = conn.get_all_volumes(volume_ids=VOLUME_ID) #Get all volumes assocated with the current Instance
-        if len(volumes) != 1:
-            fatal('Failed to load remote volume with id: "%s"' % (VOLUME_ID))
-        info("Got the volume")
-        volume = volumes[0]
-
-        if volume.status == 'in-use':
-            fatal("specified volume is already in use")
-
-        # TODO: check if volume placement is different than the instance placement. can only attach if in same region
-    else:
-        info("Creating a new volume...")
-        # Possible TODO: determine size of volume from source directory
-        volume = conn.create_volume(10, instance.placement)
-
-        RESOURCES.append(('volume', volume))
-
-        volumeTimeout = 0
-        info("Waiting for the volume to become available...")
-        while volume.status != 'available':
-            if volumeTimeout >= UPDATE_TIMEOUT:
-                raise EC2BackupError("volume not available despite waiting %s seconds".format(UPDATE_TIMEOUT))
-            time.sleep(5)
-            info("Checking if the volume is ready...")
-            volume.update()
-            volumeTimeout += 5
+    volumeTimeout = 0
+    info("Waiting for the volume to become available...")
+    while volume.status != 'available':
+        if volumeTimeout >= UPDATE_TIMEOUT:
+            raise TriggerCleanup("volume not available despite waiting %s seconds".format(UPDATE_TIMEOUT))
+        time.sleep(5)
+        info("Checking if the volume is ready...")
+        volume.update()
+        volumeTimeout += 5
     
     info("Trying to attach volume to instance")
     if volume.attach(instance.id, DEVICE): #attach volume
