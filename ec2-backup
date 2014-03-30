@@ -6,6 +6,7 @@ import sys
 import ConfigParser
 import argparse
 import random
+import subprocess
 
 class TriggerCleanup(Exception):
     pass
@@ -55,7 +56,7 @@ def canConnect(opts, ip):
     info("trying to test ssh connectivity to instance")
     # -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no was presumably added to SSH_OPTS
     # it will either complain about hosts file or ask that you accept/deny new hosts key without these flags
-    if os.system("ssh %s fedora@%s 'echo  > /dev/null' " % (opts, ip)) == 0:
+    if runSystemShellCommand("ssh %s fedora@%s 'echo  > /dev/null' " % (opts, ip))[0] == 0:
         return True
     return False
 
@@ -97,7 +98,7 @@ CREDENTIALS = {
 # Possible TODO: allow user to specify instance type in AWS_BACKUP_ARGS
 KEY_NAME        = os.environ.get('EC2_PRIVATE_KEY')
 AMI_IMAGE_ID    = 'ami-3b361952'
-INSTANCE_TYPE   = 't1.micro'
+INSTANCE_TYPE   = 'm1.medium' #'t1.micro'
 AWS_REGION      = 'us-east-1'
 AWS_AZ          = 'us-east-1c' # AZ stands for Availability Zone
 SECURITY_GROUP  = 'ec2-backup-default'
@@ -109,6 +110,8 @@ VOLUME_ID       = args.volume # will be None if unspecified
 METHOD          = args.method
 UPDATE_TIMEOUT  = 5*60 # 5 minute maximum wait time (in seconds)
 SSH_OPTS        = os.environ.get('EC2_BACKUP_FLAGS_SSH', "")
+
+FILESYSTEM_MOUNTED = False
 
 """
 AMIs are bound to a region, so we need to
@@ -146,6 +149,26 @@ def try_connection(region):
 
     info("Connected to region: %s" % (region,))
     return conn
+
+def runSystemShellCommand(cmd):
+    info("running shell command: "+cmd)
+    process = subprocess.Popen(cmd, shell = True, stdout = subprocess.PIPE, stderr = subprocess.PIPE)
+    output, error = process.communicate()
+    returnCode = process.returncode
+    if returnCode != 0:
+        warn("non-zero return code for \"cmd\": "+error)
+    return (returnCode, output, error)
+
+def fileExists(cmd, filename):
+    (returnCode, output, error) = runSystemShellCommand(cmd)
+    output = output.replace("\t", "\n").replace("\r\n", "\n")
+    output = map(lambda x: x.strip(), output )
+    info("checking for files existance: file={0}, files={1}".format(filename, str(output.split("\n"))))
+    return (returnCode == 0) and (filename in output.split("\n"))
+
+def fileExistsInDirOnRemoteSystem(SSH_OPTS, instance, directory, filename):
+    cmd = "ssh -t -t {0} fedora@{1} \" ls {2} \" ".format(SSH_OPTS, instance.public_dns_name, directory)
+    return fileExists(cmd, filename)
 
 def lookup_volume(vol_id):
     info("Looking up volume: %s" % (vol_id,))
@@ -211,7 +234,8 @@ try:
     if key.save(TMP_DIR):
         info("Successfully saved KeyPair to: %s" % (path_to_key))
         RESOURCES.append(('keypair', key))
-        SSH_OPTS += " -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -i " + path_to_key + " "
+        SSH_OPTS += " -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no "
+        SSH_OPTS += "-i " + path_to_key + " "
     else:
         fatal("Unable to save the KeyPair. Are you able to write to %s?" % (path_to_key))
 
@@ -292,7 +316,7 @@ try:
     else:
         fatal("could not connect to ec2 instance over ssh")
 
-    os.system("ssh -t -t {0} fedora@{1} \"sudo ls /dev \" ".format(SSH_OPTS, instance.public_dns_name))                
+    #os.system("ssh -t -t {0} fedora@{1} \"sudo ls /dev \" ".format(SSH_OPTS, instance.public_dns_name))                
 
     """
     Mount EBS volume to new instance
@@ -339,17 +363,32 @@ try:
     # TODO: handle rsync: http://blog.bobbyallen.me/2011/06/10/automating-remote-backups-over-rsync-with-ssh/
 
     info("volume.attach_data.device is: '"+str(volume.attach_data.device)+"'")
+    attach_location = '/dev/xvdf'
+
+    volumeShowsOnFilesystemTimeout = 0
+    while not fileExistsInDirOnRemoteSystem(SSH_OPTS, instance, "/dev", "xvdf"):
+        if volumeShowsOnFilesystemTimeout >= 500:
+            raise TriggerCleanup("volume not available on filesystem despite waiting {0} seconds".format(UPDATE_TIMEOUT))
+        else:
+            time.sleep(15)
+            info("waiting for attached volume to show up on filesystem")
+            volumeShowsOnFilesystemTimeout += 15
+    #time.sleep(5*60)
+
+    # delete these files so that rsync/dd does not run into issues
+    runSystemShellCommand("ssh -t -t {0} fedora@{1} \" rm .bashrc \" ".format(SSH_OPTS, instance.public_dns_name))
+    runSystemShellCommand("ssh -t -t {0} fedora@{1} \" rm .bash_profile \" ".format(SSH_OPTS, instance.public_dns_name))
+    runSystemShellCommand("ssh -t -t {0} fedora@{1} \" rm .profile \" ".format(SSH_OPTS, instance.public_dns_name))
 
     if METHOD == 'rsync':
         info("backing up %s using rsync" % BCKUPSRCDIR)
-        if os.system("ssh -t -t {0} fedora@{1} \"sudo mkdir -p /mnt/data-store\" ".format(SSH_OPTS, instance.public_dns_name)) != 0:
+        if runSystemShellCommand("ssh -t -t {0} fedora@{1} \"sudo mkdir -p /mnt/data-store\" ".format(SSH_OPTS, instance.public_dns_name))[0] != 0:
             fatal("could not create mount point on instance for rsync")
 
-        checkFileSystemVal = os.system("ssh -t -t {0} fedora@{1} \"sudo fsck {2} \" ".format(SSH_OPTS, instance.public_dns_name, str(volume.attach_data.device)))
+        checkFileSystemVal = runSystemShellCommand("ssh -t -t {0} fedora@{1} \"sudo fsck {2} \" ".format(SSH_OPTS, instance.public_dns_name, str(attach_location)))[0]
         if checkFileSystemVal != 0:
             info("creating filesystem on remote ebs volume")
-            if os.system("ssh -t -t {0} fedora@{1} \"sudo mkfs -t ext4 {2} \" ".format(SSH_OPTS, instance.public_dns_name, str(volume.attach_data.device))) != 0:
-                os.system("ssh -t -t {0} fedora@{1} \"sudo ls /dev \" ".format(SSH_OPTS, instance.public_dns_name))                
+            if runSystemShellCommand("ssh -t -t {0} fedora@{1} \"sudo mkfs -t ext4 {2} \" ".format(SSH_OPTS, instance.public_dns_name, str(attach_location)))[0] != 0:
                 fatal("could not create filesystem on remote ebs volume")
             else:
                 info("created filesystem on remote ebs volume")
@@ -358,7 +397,9 @@ try:
 
 
         # the following would mount the block device and make fedora the owner of all files
-        mountval = os.system("ssh -t -t {0} fedora@{1} \" sudo mount {2} /mnt/data-store && sudo chown -R fedora /mnt/data-store \"".format(SSH_OPTS, instance.public_dns_name, str(volume.attach_data.device)) )
+        mountval = runSystemShellCommand("ssh -t -t {0} fedora@{1} \" sudo mount {2} /mnt/data-store && sudo chown -R fedora /mnt/data-store \"".format(SSH_OPTS, instance.public_dns_name, str(attach_location)) )[0]
+
+        FILESYSTEM_MOUNTED = True
 
         if mountval != 0:
             fatal("could not mount ebs volume")
@@ -366,21 +407,22 @@ try:
             info("ebs volume mounted")
 
         # do rsync command here
-        rsyncVal = os.system("  rsync -avz --delete -e \"ssh -t -t {0} \" {1} fedora@{2}:/mnt/data-store ".format(SSH_OPTS, BCKUPSRCDIR, instance.public_dns_name) )
+        rsyncVal = runSystemShellCommand("rsync -e \"ssh {0} \" -avz -vv --delete --rsync-path=\"rsync\" {1} fedora@{2}:/mnt/data-store ".format(SSH_OPTS, BCKUPSRCDIR, instance.public_dns_name) )[0]
         if rsyncVal != 0:
             fatal("failed to rsync with remote system volume")
         else:
             info("successfully ran rsync with remote volume")
 
-        umountVal = os.system("ssh -t -t {0} fedora@{1} \" sudo umount /mnt/data-store \"".format(SSH_OPTS, instance.public_dns_name) )
+        umountVal = runSystemShellCommand("ssh -t -t {0} fedora@{1} \" sudo umount /mnt/data-store \"".format(SSH_OPTS, instance.public_dns_name) )[0]
         if umountVal != 0:
             fatal("failed to unmount remote volume from instance")
         else:
             info("successfully umounted remote volume from instance")
+            FILESYSTEM_MOUNTED = False
     else:
         info("backing up %s using dd" % BCKUPSRCDIR)
         # the following should handle dd without any issues
-        ddVal = os.system( "tar -cvf - BCKUPSRCDIR | ssh -t -t {0} fedora@{1} \"sudo dd of={2} bs=64k conv=block\"  ".format(SSH_OPTS, instance.public_dns_name, str(volume.attach_data.device)) )
+        ddVal = runSystemShellCommand( "tar -cvf - {3} | ssh -t -t {0} fedora@{1} \"sudo dd of={2} bs=64k conv=block\"  ".format(SSH_OPTS, instance.public_dns_name, str(attach_location), BCKUPSRCDIR) )[0]
         if ddVal != 0:
             fatal("could not backup directory to remote ebs volume using dd")
         else:
@@ -417,6 +459,8 @@ try:
 
     info('EC2 Instance terminated successfully')
 
+    print volume.id
+
 except Exception, e:
     # TODO: shouldn't this be warn(e)?
     warn(str(e))
@@ -450,6 +494,9 @@ except Exception, e:
                         info("instance already terminated")
                 elif key == 'volume':
                     if obj.status == 'available' or obj.status == 'in-use':
+                        if FILESYSTEM_MOUNTED:
+                            info("unmounting filesystem")
+                            runSystemShellCommand("ssh -t -t {0} fedora@{1} \" sudo umount /mnt/data-store \"".format(SSH_OPTS, instance.public_dns_name) )
                         info("Deleting allocated volume...")
                         obj.update()
                         volumeDetached = obj.detach()
