@@ -30,14 +30,15 @@ except ImportError:
 Produce an information message
 """
 def info(msg):
-    if VERBOSE:
+    if VERBOSE and msg:
         print "[INFO] " + msg
 
 """
 Produce a non-fatal error message
 """
 def warn(msg):
-    print "[WARN] " + msg
+    if msg:
+        print "[WARN] " + msg
 
 """
 Fail with an error message
