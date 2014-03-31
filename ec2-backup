@@ -126,7 +126,11 @@ CREDENTIALS = {
 
 KEY_NAME = os.environ.get('EC2_PRIVATE_KEY')
 AMI_IMAGE_ID = 'ami-3b361952'
-INSTANCE_TYPE = 'm1.medium' # m1.medium'
+INSTANCE_TYPE = os.environ.get('AWS_BACKUP_INSTANCE_TYPE', "m1.medium")
+ACCEPTABLE_INSTANCE_TYPES = ['t1.micro', 'm1.small', 'm1.medium', 'm1.large']
+if INSTANCE_TYPE not in ACCEPTABLE_INSTANCE_TYPES:
+    fatal("Invalid instance type specified: acceptable options are %s " % (str(ACCEPTABLE_INSTANCE_TYPES)), cleanup=False)
+
 AWS_REGION = 'us-east-1'
 AWS_AZ = 'us-east-1c' # AZ stands for Availability Zone
 SECURITY_GROUP = 'ec2-backup-default'
