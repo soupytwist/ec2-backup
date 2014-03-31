@@ -40,6 +40,13 @@ the status checks are complete before we connect to the remote instance, or
 else things could go south if it fails to connect. The result of this is that
 there is a long (~60sec) delay before we establish a connection.
 
+We do not support the EC2_BACKUP_FLAGS_AWS environment variable. Since we deal
+with the creation of keys and security groups in the script automatically, we
+did not see the need to keep this environment variable around. If the user 
+wishes to specify the usage of a specific instance type, they can use the 
+AWS_BACKUP_INSTANCE_TYPE flag. It accepts the values t1.micro through m1.large 
+with an error thrown if the type is either invalid or outside of that range. 
+
 Scalability
 The code is not organized nicely being as everything is stuck into one file, so
 extending this with extra functionality will be error-prone. As far as use, the
