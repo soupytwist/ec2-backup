@@ -38,13 +38,13 @@ Produce a non-fatal error message
 """
 def warn(msg):
     if msg:
-        print "[WARN] " + msg
+        sys.stderr.write("[WARN] " + str(msg))
 
 """
 Fail with an error message
 """
 def fatal(reason, cleanup=True):
-    print "[ERROR] " + reason
+    sys.stderr.write("[ERROR] " + str(reason))
     if cleanup:
         raise TriggerCleanup()
     else:
