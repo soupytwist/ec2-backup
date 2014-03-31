@@ -26,17 +26,6 @@ except ImportError:
     print "Please see: https://github.com/boto/boto"
     sys.exit(1)
 
-
-# from http://stackoverflow.com/questions/1392413/calculating-a-directory-size-using-python
-def get_size(start_path = '.'):
-    total_size = 0
-    for dirpath, dirnames, filenames in os.walk(start_path):
-        for f in filenames:
-            fp = os.path.join(dirpath, f)
-            total_size += os.path.getsize(fp)
-    return total_size
-
-
 """
 Produce an information message
 """
@@ -60,12 +49,33 @@ def fatal(reason, cleanup=True):
     else:
         sys.exit(1)
 
+# from http://stackoverflow.com/questions/1392413/calculating-a-directory-size-using-python
+"""
+gets the size of a directory and all sub-directories/files
+"""
+def get_directory_size(start_path = '.'):
+    total_size = 0
+    for dirpath, dirnames, filenames in os.walk(start_path):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            total_size += os.path.getsize(fp)
+    return total_size
+
 """
 Return True is directory exists and is a real path
 Return False otherwise
 """
 def directoryExists(directory):
     return os.path.exists(directory) and os.path.isdir(directory)
+
+"""
+rounds the number of bytes to GB
+"""
+def roundByteSizeToGigabytes(size):
+    # since this cuts off in between sizes, add 1 GB to round up. 
+    # this way 5 bytes doesn't get rounded down to 0
+    GBsize = (size/(1024*1024*1024))+1
+    return GBsize
 
 """
 Try and reach a system over ssh
@@ -156,6 +166,9 @@ if not directoryExists(BCKUPSRCDIR):
     fatal('backup directory {0} does not exist'.format(BCKUPSRCDIR), cleanup=False)
 else:
     info("found backup directory {0}".format(BCKUPSRCDIR))
+
+NECESSARY_VOLUME_SIZE = int(roundByteSizeToGigabytes(get_directory_size(BCKUPSRCDIR))+1)
+info("determined NECESSARY_VOLUME_SIZE: {0}".format(NECESSARY_VOLUME_SIZE))
 
 def try_connection(region):
     if region not in AMI_IMAGE_IDS:
@@ -351,8 +364,7 @@ try:
     if volume is None:
         info("Creating a new volume...")
         # Possible TODO: determine size of volume from source directory
-        volume = conn.create_volume(10, instance.placement)
-
+        volume = conn.create_volume(NECESSARY_VOLUME_SIZE, instance.placement)
         RESOURCES.append(('volume', volume))
 
     volumeTimeout = 0
@@ -364,6 +376,10 @@ try:
         info("Checking if the volume is ready...")
         volume.update()
         volumeTimeout += 5
+
+    if volume.size < NECESSARY_VOLUME_SIZE:
+        fatal("ec2-backup program decided necessary volume size is {0} but current volume size is {1}".format(NECESSARY_VOLUME_SIZE, volume.size))
+    
 
     info("Trying to attach volume to instance")
     if volume.attach(instance.id, DEVICE):
@@ -509,8 +525,6 @@ try:
     print volume.id
     sys.exit(0)
 
-    """ NOTREACHED """
-
 except Exception, e:
     # TODO: shouldn't this be warn(e)?
     warn(str(e))
@@ -622,3 +636,5 @@ except Exception, e:
                 """
                 warn(str(inner))
                 warn("Cleanup step failed, continuing...")
+    sys.exit(1)
+
