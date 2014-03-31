@@ -50,10 +50,20 @@ are unsupported if we do not have an AMI defined for them.
 
 Issues
 The script is tested with boto v2.2.2, which is now over 2 years old, so it is
-possible that changes in boto could break our code.
+possible that changes in boto could break our code. Additionally, our size 
+calculations are a bit cautious. We calculate the total space of the directory 
+being backed up, convert that to gigabytes, floor it, and then add 2 gigabytes.
 
 Testing
-<< TODO >>
+Testing covered all of the base cases. We backed up a local directory on the 
+linux lab with both rsync and dd without any volume specified. We then made 
+changes to that directory and rebacked up to the same volumes created in the 
+first attempt. Finally, a new instance was created with both new volumes 
+attached to it. We mounted the rsync volume and checked that the changes were
+accurate. The same was done to the tarball on the block device. 
+
+Additional testing was done with invalid backup methods, invalid directories,
+and volumes too small. 
 
 Linting
 To be sure we didn't miss anything, especially syntax errors, undefined
