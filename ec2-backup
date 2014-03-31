@@ -98,7 +98,7 @@ CREDENTIALS = {
 # Possible TODO: allow user to specify instance type in AWS_BACKUP_ARGS
 KEY_NAME        = os.environ.get('EC2_PRIVATE_KEY')
 AMI_IMAGE_ID    = 'ami-3b361952'
-INSTANCE_TYPE   = 'm1.medium' #'t1.micro'
+INSTANCE_TYPE   = 'm1.medium' # m1.medium'
 AWS_REGION      = 'us-east-1'
 AWS_AZ          = 'us-east-1c' # AZ stands for Availability Zone
 SECURITY_GROUP  = 'ec2-backup-default'
