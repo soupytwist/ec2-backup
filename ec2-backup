@@ -22,8 +22,8 @@ try:
     import boto
     import boto.ec2
 except ImportError:
-    print "Missing required dependency: boto"
-    print "Please see: https://github.com/boto/boto"
+    sys.stderr.write("Missing required dependency: boto")
+    sys.stderr.write("Please see: https://github.com/boto/boto")
     sys.exit(1)
 
 """
@@ -644,7 +644,7 @@ except Exception, e:
 
                         info("current status of volume is %s" % obj.status)
                         if not volume_detached and not detach_forced:
-                            print "could not detach volume from instance"
+                            sys.stderr.write("could not detach volume from instance")
 
                         # wait here for it to be detached first. if its still detaching at time of deletion it will crash
                         volumeTimeout = 0
