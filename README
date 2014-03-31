@@ -75,7 +75,7 @@ require far too much refactoring to be worthwhile.
 
 Distribution of Effort
 Alexander Beal took first run at program. Nick Smith and Nick Bevacqua took
-turns modifying the code. <who> implemented the argument parsing. Nick B.
+turns modifying the code. Nick S. implemented the argument parsing. Nick B.
 updated rsync and dd. Nick S. worked on EBS issues, including availability zone
 discrepancies. Nick B. led the testing effort and identified many problems, in
 addition to solving many of them. All made last minute changes.
