@@ -61,6 +61,13 @@ def fatal(reason, cleanup=True):
         sys.exit(1)
 
 """
+Return True is directory exists and is a real path
+Return False otherwise
+"""
+def directoryExists(directory):
+    return os.path.exists(directory) and os.path.isdir(directory)
+
+"""
 Try and reach a system over ssh
 """
 def can_connect(opts, ip):
@@ -141,6 +148,14 @@ AMI_IMAGE_IDS = {
 
 if METHOD not in ['dd', 'rsync']:
     fatal('invalid method; please specify either dd or rsync using -m/--method', cleanup=False)
+
+if (BCKUPSRCDIR is None) or (BCKUPSRCDIR == ''):
+    fatal('backup directory invalid or unspecified', cleanup=False)
+
+if not directoryExists(BCKUPSRCDIR):
+    fatal('backup directory {0} does not exist'.format(BCKUPSRCDIR), cleanup=False)
+else:
+    info("found backup directory {0}".format(BCKUPSRCDIR))
 
 def try_connection(region):
     if region not in AMI_IMAGE_IDS:
