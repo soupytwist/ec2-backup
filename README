@@ -1,0 +1,71 @@
+================================================================================
+                                 ec2-backup
+================================================================================
+
+Authors
+Nicholas Bevacqua, Alexander Beal, and Nicholas Smith
+
+Implementation
+We used the AWS SDK for Python, Boto, to implement ec2-backup.  The goal was to
+have a program that runs on linux-lab.cs.stevens.edu to perform backups of a
+directory via dd or rsync. Initially, we import our service modules to use our
+functions. AWS Access keys are required from the end-user to connect to their
+AWS environment. Since AWS requires that EBS volumes exist in the same
+Availability Zone (AZ) as an EC2 instance, we specify an AMI ID for every
+region we can. If the user tries to make a backup onto an unkown region, for
+instance if AWS opens up a new region, ec2-backup will fail gracefully and
+inform the user that the region is unsupported.  No output except volume id.
+When appropriate, logging messages are labeled indicate their severity.
+
+Challenges
+>> A keypair and security group must be present
+Being as we are using boto, which makes it simple for us to interact with the
+various AWS APIs, we decided to implement the no-nonsense solution to this and
+create a security group and keypair for the user. The keypair is temporary, so
+when the program ends it is cleared, but the security group we decided could
+stick around. Because we're using a new auto-generated keypair each time, the
+user should NOT have an ssh key specified in EC2_BACKUP_FLAGS_SSH, or else this
+could conflict with the keypair we try to use.
+
+>> If a volume is specified, the instance we launch must be in the same region
+>> and availability zone or else we won't be able to mount it.
+This means that first, we have to figure out which region the volume is in, and
+then get the AZ from it and launch our instance there. If there was no volume
+specified, we assume some reasonable defaults.
+
+>> Waiting for the instance to be fully ready before connecting via ssh can
+>> take a long time
+This isn't so much a problem as an inconvenience, however we must wait until
+the status checks are complete before we connect to the remote instance, or
+else things could go south if it fails to connect. The result of this is that
+there is a long (~60sec) delay before we establish a connection.
+
+Scalability
+The code is not organized nicely being as everything is stuck into one file, so
+extending this with extra functionality will be error-prone. As far as use, the
+backup functionality is not very smart so it would not be an ideal consumer
+solution, but it does its job. Also, being as AMIs are also linked to a given
+region, we were forced to define an AMI to use for each region, so some regions
+are unsupported if we do not have an AMI defined for them.
+
+Issues
+The script is tested with boto v2.2.2, which is now over 2 years old, so it is
+possible that changes in boto could break our code.
+
+Testing
+<< TODO >>
+
+Linting
+To be sure we didn't miss anything, especially syntax errors, undefined
+variables, or anything else that could cause the script to fail, we checked the
+code with pylint <https://pypi.python.org/pypi/pylint> and corrected warnings /
+errors as necessary. Unfortunately there are still many many many warnings that
+there are lines that are very long (>80 chars), which is a problem but would
+require far too much refactoring to be worthwhile.
+
+Distribution of Effort
+Alexander Beal took first run at program. Nick Smith and Nick Bevacqua took
+turns modifying the code. <who> implemented the argument parsing. Nick B.
+updated rsync and dd. Nick S. worked on EBS issues, including availability zone
+discrepancies. Nick B. led the testing effort and identified many problems, in
+addition to solving many of them. All made last minute changes.
