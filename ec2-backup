@@ -123,14 +123,12 @@ CREDENTIALS = {
     'aws_secret_access_key': SECRET_KEY
 }
 
-# Possible TODO: allow user to specify instance type in AWS_BACKUP_ARGS
 KEY_NAME = os.environ.get('EC2_PRIVATE_KEY')
 AMI_IMAGE_ID = 'ami-3b361952'
 INSTANCE_TYPE = 'm1.medium' # m1.medium'
 AWS_REGION = 'us-east-1'
 AWS_AZ = 'us-east-1c' # AZ stands for Availability Zone
 SECURITY_GROUP = 'ec2-backup-default'
-# TODO Ensure that this directory exists + calculate its size
 BCKUPSRCDIR = args.backupdir # Directory to backup, should be last command line option
 DEVICE = '/dev/sdf'
 TMP_DIR = '/tmp'
@@ -138,8 +136,53 @@ VOLUME_ID = args.volume # will be None if unspecified
 METHOD = args.method
 UPDATE_TIMEOUT = 5*60 # 5 minute maximum wait time (in seconds)
 SSH_OPTS = os.environ.get('EC2_BACKUP_FLAGS_SSH', "")
+LAUNCHED_INSTANCE_ID = ''
+BACKUP_VOLUME_ID = ''
+INSTANCE_VOLUMES_TO_DELETE = []
 
 FILESYSTEM_MOUNTED = False
+
+"""
+determine is volume belongs to instance with id of LAUNCHED_INSTANCE_ID
+"""
+def volume_is_for_launched_instance(x):
+    if x is None:
+        return False
+    if x.attach_data is None:
+        return False
+    if x.attach_data.instance_id is None:
+        return False
+
+    if str(x.attach_data.instance_id) == '':
+        return False
+
+    if str(x.attach_data.instance_id) != str(LAUNCHED_INSTANCE_ID):
+        return False
+
+    return True
+
+"""
+try to delete ebs volumes created alongside instance since delete on termination is not supported
+"""
+def delete_instance_volumes():
+    for v in INSTANCE_VOLUMES_TO_DELETE:
+        try:
+            vDeleteTimeout = 5*60
+            v.update()
+            while not (v.status == 'available'):
+                if vDeleteTimeout <= 0:
+                    break
+                else:
+                    time.sleep(20)
+                    vDeleteTimeout -= 20
+                    v.update()
+            v.update()
+            if v.status == 'available':
+                v.delete()
+            else:
+                warn("could not delete instance volume id={0}".format(str(v.id)))
+        except Exception, e:
+            warn(e)
 
 """
 AMIs are bound to a region, so we need to
@@ -311,12 +354,18 @@ try:
     # Wait for instance state to be running
     instance = resrv.instances[0]
     RESOURCES.append(('instance', instance))
+    LAUNCHED_INSTANCE_ID = str(instance.id)
 
     # Timeout after waiting too long
     instanceTimeout = 0
     info("Waiting for remote machine to start...")
     while not instance.state == 'running':
         if instanceTimeout >= UPDATE_TIMEOUT:
+            # store volumes attached to instance on startup
+            all_volumes_list = conn.get_all_volumes()
+            if all_volumes_list is None:
+                all_volumes_list = []
+            INSTANCE_VOLUMES_TO_DELETE = filter(volume_is_for_launched_instance, all_volumes_list)
             raise TriggerCleanup("Machine has not updated despite waiting %s seconds".format(UPDATE_TIMEOUT))
         time.sleep(10)
         info("Checking if the machine is ready...")
@@ -324,6 +373,12 @@ try:
         instanceTimeout += 10
 
     info('Instance Ready. Instance ID: ' + instance.id)
+
+    # store volumes attached to instance on startup
+    all_volumes_list = conn.get_all_volumes()
+    if all_volumes_list is None:
+        all_volumes_list = []
+    INSTANCE_VOLUMES_TO_DELETE = filter(volume_is_for_launched_instance, all_volumes_list)
 
     initializationTimedOut = 0
     doneInitializingInstance = False
@@ -363,7 +418,6 @@ try:
     """
     if volume is None:
         info("Creating a new volume...")
-        # Possible TODO: determine size of volume from source directory
         volume = conn.create_volume(NECESSARY_VOLUME_SIZE, instance.placement)
         RESOURCES.append(('volume', volume))
 
@@ -379,18 +433,18 @@ try:
 
     if volume.size < NECESSARY_VOLUME_SIZE:
         fatal("ec2-backup program decided necessary volume size is {0} but current volume size is {1}".format(NECESSARY_VOLUME_SIZE, volume.size))
-    
 
     info("Trying to attach volume to instance")
     if volume.attach(instance.id, DEVICE):
         info("Successfully attached storage volume.")
+        BACKUP_VOLUME_ID = str(volume.id)
     else:
         fatal("Failed to attach volume")
 
     volume.update()
     info('Volume is attached')
 
-    # TODO: if method is rsync, create filesystem on newly attached volume if none exists (/dev/xvdf)
+    # if method is rsync, create filesystem on newly attached volume if none exists (/dev/xvdf)
     """
     Steps to perform sync
       http://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-using-volumes.html
@@ -520,20 +574,20 @@ try:
     info('Volume detatched succesfully')
 
     instance.terminate()
+
+    delete_instance_volumes()
+
     info('EC2 Instance terminated successfully')
 
     print volume.id
     sys.exit(0)
 
 except Exception, e:
-    # TODO: shouldn't this be warn(e)?
     warn(str(e))
 
     """ Check if there is anything that needs to be cleaned up """
     if len(RESOURCES) > 0:
         warn("Cleaning up...")
-
-        # TODO: should we look into deleting our custom security group after we are done?
 
         """
         RESOURCES contains tuples of the things we have allocated and need to
@@ -554,13 +608,12 @@ except Exception, e:
                     except:
                         info("Failed to remove private key file: %s" % (path_to_key,))
                 elif key == 'instance':
-                    # creating an instance automatically creates an ebs volume.
-                    # find and delete that ebs volume as well (should be attached).
-                    # we should be careful that this part runs after 'volume' as we dont want to accidentally delete the volume we stored data too
-                    # TODO: find and delete that volume
                     if obj.state == 'running':
                         info("Terminating instance...")
                         obj.terminate()
+
+                        delete_instance_volumes()
+
                         info("Instance is stopping...")
                     else:
                         info("instance already terminated")
@@ -592,8 +645,6 @@ except Exception, e:
                         volumeTimeout = 0
                         info("Waiting for the volume to become available...")
 
-                        # TODO is this already fixed?
-                        # fix this. you must wait for some other status
                         info("Checking if the volume is detached...")
                         while obj.status != 'available':
                             if volumeTimeout >= UPDATE_TIMEOUT*5:
