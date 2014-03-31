@@ -378,9 +378,7 @@ try:
     #time.sleep(5*60)
 
     # delete these files so that rsync/dd does not run into issues
-    runSystemShellCommand("ssh -t -t {0} fedora@{1} \" rm .bashrc \" ".format(SSH_OPTS, instance.public_dns_name))
-    runSystemShellCommand("ssh -t -t {0} fedora@{1} \" rm .bash_profile \" ".format(SSH_OPTS, instance.public_dns_name))
-    runSystemShellCommand("ssh -t -t {0} fedora@{1} \" rm .profile \" ".format(SSH_OPTS, instance.public_dns_name))
+    runSystemShellCommand("ssh -t -t {0} fedora@{1} \" rm -f /home/fedora/{{.bashrc,.bash_profile,.profile}} \" ".format(SSH_OPTS, instance.public_dns_name))
     runSystemShellCommand("ssh -t -t {0} fedora@{1} \" sudo chown -R fedora /dev/xvdf \" ".format(SSH_OPTS, instance.public_dns_name))
 
     if METHOD == 'rsync':
@@ -409,51 +407,62 @@ try:
         else:
             info("ebs volume mounted")
 
+        """
+        +++ BEGIN RSYNC  +++
+        """
+
         rsyncPermissionsVal = runSystemShellCommand("ssh -t -t {0} fedora@{1} \"echo 'Defaults !requiretty' | sudo tee /etc/sudoers.d/rsync > /dev/null\"".format(SSH_OPTS, instance.public_dns_name) )[0]
 
         if rsyncPermissionsVal != 0:
-            fatal("could not change permissions for rsync")
+            fatal("Could not change permissions for rsync")
         else:
-            info("rsync permissions changed")
+            info("Rsync permissions changed successfully")
         
-
-        # do rsync command here
+        """
+        Options explained
+          -e Specify the remote shell to use (ssh with options)
+          -a Archive mode; recursive and preserve meta info
+          -v Verbose output
+          -z Compress the data being transferred
+          --rsync-path Set the path to the rsync executable on remote host
+        """
         rsyncVal = runSystemShellCommand("rsync -e \"ssh {0} \" -avz -vv --delete --rsync-path=\"sudo rsync\" {1} fedora@{2}:/mnt/data-store ".format(SSH_OPTS, BCKUPSRCDIR, instance.public_dns_name) )[0]
         if rsyncVal != 0:
-            fatal("failed to rsync with remote system volume")
+            fatal("Failed to rsync with remote system volume")
         else:
-            info("successfully ran rsync with remote volume")
+            info("Successfully ran rsync with remote volume")
+
+        """
+        +++ END RSYNC +++
+        """
 
         umountVal = runSystemShellCommand("ssh -t -t {0} fedora@{1} \" sudo umount /mnt/data-store \"".format(SSH_OPTS, instance.public_dns_name) )[0]
         if umountVal != 0:
-            fatal("failed to unmount remote volume from instance")
+            fatal("Failed to unmount remote volume from instance")
         else:
-            info("successfully umounted remote volume from instance")
+            info("Successfully umounted remote volume from instance")
             FILESYSTEM_MOUNTED = False
     else:
-        info("backing up %s using dd" % BCKUPSRCDIR)
+        """
+        +++ BEGIN DD +++
+        """
+        info("Backing up %s using dd" % BCKUPSRCDIR)
         # the following should handle dd without any issues
         ddVal = runSystemShellCommand( "tar -cvf - {3} | ssh {0} fedora@{1} \"dd of={2} bs=64k conv=block\"  ".format(SSH_OPTS, instance.public_dns_name, str(attach_location), BCKUPSRCDIR) )[0]
         if ddVal != 0:
-            fatal("could not backup directory to remote ebs volume using dd")
+            fatal("Could not backup directory to remote ebs volume using dd")
         else:
-            info("successfully backed up directory to remote ebs volume using dd")
+            info("Successfully backed up directory to remote ebs volume using dd")
+
+        """
+        +++ END DD +++
+        """
 
 
 # Initiate Rsync
     info('Synchronized directory with AWS')
 
 #    for dir in BCKUPSRCDIR: # we are only backing up a single directory to my knowledge. argument parsing currently accounts for that
-#        """
-#        Options explained
-#        -e Specify the remote shell to use (ssh with options)
-#        -a Archive mode; recursive and preserve meta info
-#        -v Verbose output
-#        -z Compress the data being transferred
-#        --rsync-path Set the path to the rsync executable on remote host
-#        """
-#        # TODO Refactor so that this is more easily understandable
-#        os.system("rsync -e \"ssh {0}\" -avz --delete --rsync-path=\"sudo rsync\" {2} ec2-user@{1}:/mnt/data-store{2}".format(SSH_OPTS, instance.dns_name, backup_dir))
 
 # Unmount EBS volume and terminate the instance
     info('Detaching volume from EC2 Instance and Terminating Instance')
@@ -468,19 +477,29 @@ try:
     info('Volume detatched succesfully')
 
     instance.terminate()
-
     info('EC2 Instance terminated successfully')
 
     print volume.id
+    sys.exit(0)
+
+    """ NOTREACHED """
 
 except Exception, e:
     # TODO: shouldn't this be warn(e)?
     warn(str(e))
+
+    """ Check if there is anything that needs to be cleaned up """
     if len(RESOURCES) > 0:
         warn("Cleaning up...")
 
         # TODO: should we look into deleting our custom security group after we are done?
 
+        """
+        RESOURCES contains tuples of the things we have allocated and need to
+        be freed (deleted/removed) at the end. This is a subset of all the
+        things we create in the sunny-day scenario, in case the script fails
+        midway through for any reason.
+        """
         for key, obj in reversed(RESOURCES):
             try:
                 if key == 'keypair':
@@ -488,7 +507,7 @@ except Exception, e:
                     if obj.delete():
                         info("Successfully removed old keypair")
                     else:
-                        warn("Keypair could not be deleted: %s" % (KEYPAIRNAME,))
+                        warn("Failed to delete keypair: %s" % (KEYPAIRNAME,))
                     try:
                         os.remove(path_to_key)
                     except:
@@ -509,28 +528,30 @@ except Exception, e:
                         if FILESYSTEM_MOUNTED:
                             info("unmounting filesystem")
                             runSystemShellCommand("ssh -t -t {0} fedora@{1} \" sudo umount /mnt/data-store \"".format(SSH_OPTS, instance.public_dns_name) )
-                        info("Deleting allocated volume...")
+
+                        info("Cleaning up allocated volume...")
                         obj.update()
                         volumeDetached = obj.detach()
                         time.sleep(10)
                         obj.update()
                         detachForced = False
+
+                        """ If detaching the volume failed, use the force """
                         if not volumeDetached:
-                            info("forcing volume detachment")
+                            info("Forcing volume detachment")
                             detachForced = obj.detach(force=True)
                             obj.update()
                             time.sleep(10)
-                        else:
-                            info("volume should be been detached")
 
                         info("current status of volume is %s" % obj.status)
-
                         if not volumeDetached and not detachForced:
                             print "could not detach volume from instance"
 
                         # wait here for it to be detached first. if its still detaching at time of deletion it will crash
                         volumeTimeout = 0
                         info("Waiting for the volume to become available...")
+
+                        # TODO is this already fixed?
                         # fix this. you must wait for some other status 
                         info("Checking if the volume is detached...")
                         while obj.status != 'available':
@@ -544,17 +565,28 @@ except Exception, e:
                             volumeTimeout += 5
                         info("current volume status: "+obj.status)
 
-                        try:
-                            if VOLUME_ID is None:
-                                # you only want to delete the volume on cleanup if we personally created the volume during program execution
+                        """
+                        We only want to delete the volume on cleanup if we
+                        personally created the volume during program execution
+                        """
+                        if VOLUME_ID is None:
+                            try:
+                                info("Deleting volume: %s" % (obj.id,))
                                 obj.delete()
-                        except Exception, vex:
-                            print "could not delete volume: "
-                            print vex
-                    else:
-                        info("volume not available or in-use")
-                else:
-                    info("unrecognized key when cleaning up RESOUCES: key=%s" % key)
+                            except Exception, vex:
+                                warn("Failed while trying to delete volume: %s" % (obj.id,))
+                                info(str(vex))
+
+                    else: # volume is not available
+                        info("Volume %s not available or in-use" % (obj.id,))
+
+                else: # bogus entry in RESOURCES - this should never happen
+                    info("Unrecognized key when cleaning up RESOUCES: key=%s" % key)
+
+                """ Once we're done cleaning up, exit with code 1 to indicate error """
+                sys.exit(1)
+                
+                """ NOTREACHED """
 
             except Exception, inner:
                 warn(str(inner))
