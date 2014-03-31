@@ -22,8 +22,8 @@ try:
     import boto
     import boto.ec2
 except ImportError:
-    sys.stderr.write("Missing required dependency: boto")
-    sys.stderr.write("Please see: https://github.com/boto/boto")
+    sys.stderr.write("Missing required dependency: boto\n")
+    sys.stderr.write("Please see: https://github.com/boto/boto\n")
     sys.exit(1)
 
 """
@@ -38,13 +38,13 @@ Produce a non-fatal error message
 """
 def warn(msg):
     if msg:
-        sys.stderr.write("[WARN] " + str(msg))
+        sys.stderr.write("[WARN] " + str(msg)+"\n")
 
 """
 Fail with an error message
 """
 def fatal(reason, cleanup=True):
-    sys.stderr.write("[ERROR] " + str(reason))
+    sys.stderr.write("[ERROR] " + str(reason)+"\n")
     if cleanup:
         raise TriggerCleanup()
     else:
@@ -644,7 +644,7 @@ except Exception, e:
 
                         info("current status of volume is %s" % obj.status)
                         if not volume_detached and not detach_forced:
-                            sys.stderr.write("could not detach volume from instance")
+                            sys.stderr.write("could not detach volume from instance\n")
 
                         # wait here for it to be detached first. if its still detaching at time of deletion it will crash
                         volumeTimeout = 0
